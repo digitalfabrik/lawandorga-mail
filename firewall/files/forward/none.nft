@@ -1,0 +1,7 @@
+# No forwarding.
+
+table inet filter {
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+}

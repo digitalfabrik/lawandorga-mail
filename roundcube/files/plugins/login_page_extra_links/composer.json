@@ -1,0 +1,12 @@
+{
+    "name": "respiranto/login_page_extra_links",
+    "description": "Extra links on the login page",
+    "type": "roundcube-plugin",
+    "license": "AGPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "Einhard Leichtfuß",
+            "email": "alguien@respiranto.de"
+        }
+    ]
+}

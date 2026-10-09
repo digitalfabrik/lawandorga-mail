@@ -1,0 +1,12 @@
+{% set m = pillar['lawandorga_mail'] %}
+path = "/var/lib/rspamd/dkim/signing.key";
+selector = "{{ m['mail_dkim_selector'] }}";
+
+### Enable DKIM signing for alias sender addresses
+allow_username_mismatch = true;
+
+### Sign with the full From domain, not its registered domain.
+###  - Rspamd defaults to the eSLD, which would sign mail.law-orga.de mail as
+###    d=law-orga.de.  No key is published there, and _dmarc.mail.law-orga.de
+###    sets adkim=s, so d= has to match the From domain exactly.
+use_esld = false;

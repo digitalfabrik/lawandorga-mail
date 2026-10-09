@@ -1,0 +1,17 @@
+# Inbound ports served by Postfix, see `master.cf`.
+#  - 25: SMTP (opportunistic TLS), for mail from other MTAs.
+#  - 587: submission, STARTTLS (mandatory) + SASL.
+#  - 465: submissions, implicit TLS (wrappermode) + SASL.
+# There is no outbound set: egress is unrestricted, see
+# `../../firewall/files/output/base.nft`.
+
+table inet filter {
+	set in_ports_allow {
+		type inet_proto . inet_service
+		elements = \
+			{ tcp . $port_tcp_smtp
+			, tcp . $port_tcp_smtp_submission
+			, tcp . $port_tcp_smtps
+			}
+	}
+}

@@ -1,0 +1,43 @@
+# Logging
+
+# See
+#  - `/etc/dovecot/conf.d/10-logging.conf`
+#  - <https://doc.dovecot.org/admin_manual/logging/#logging-verbosity>
+#  - <https://doc.dovecot.org/settings/core/>
+
+
+# Defaults.
+log_path = syslog
+syslog_facility = mail
+
+
+# By default, all extra verbose logging is disabled.
+#  - We make this explicit.
+#  - At least in some cases, this is relevant for privacy.
+
+# Defaults.
+#  - Dovecot 2.4 removed several toggles in favour of the `log_debug` filter:
+#    - `auth_debug`  -> use `log_debug = category=auth`
+#    - `verbose_ssl` -> use `log_debug = category=ssl`
+#    - `imap_id_log` -> replaced by the `imap_id_received` event
+#    We keep these disabled simply by not enabling them (empty `log_debug`).
+auth_debug_passwords = no
+auth_verbose = no
+auth_verbose_passwords = no
+log_debug =
+
+
+# Login log format.
+#  - This is relevant for privacy.
+#  - Add info on negotiated TLS cipher (like Postfix).
+#  - Add `auth_user`.  This is relevant for "master" user login.
+#  - Otherwise default.
+login_log_format_elements = user=<%{user}> auth_user=<%{auth_user}> method=%{mechanism} rip=%{remote_ip} lip=%{local_ip} mpid=%{mail_pid} %{secured} %{ssl_security} session=<%{session}>
+
+# IMAP logout log format.
+#  - This is relevant for privacy.
+#  - Add number of new messages saved (%{appended}).
+#  - Otherwise default.
+#  - Note: pid, session id are implicitly logged.
+#    - I.e. all data logged for login can be related to these.
+imap_logout_format = in=%{input} out=%{output} appended=%{appended} deleted=%{deleted} expunged=%{expunged} trashed=%{trashed} hdr_count=%{fetch_hdr_count} hdr_bytes=%{fetch_hdr_bytes} body_count=%{fetch_body_count} body_bytes=%{fetch_body_bytes}

@@ -1,0 +1,498 @@
+<?php
+// Roundcube configuration.
+//
+// See:
+//  - `/var/lib/roundcube/config/defaults.inc.php`
+//  - `/usr/share/doc/roundcube-core/config.inc.php.sample`
+//
+// History:
+//  - Originally written for roundcube debver 1.4.13+dfsg.1-1~deb11u1.
+//  - Revised for debver 1.6.1+dfsg-1.
+//    - Consulted:
+//      - /usr/share/doc/roundcube/NEWS.Debian.gz
+//      - /usr/share/doc/roundcube/changelog.Debian.gz
+//      - changes to the default and example configuration files (see above)
+//  - Changed spelling engine from pspell to enchant and spelling backend from
+//    aspell to hunspell.
+//    * `enchant` is the default in Debian since Debian 12 (more precisely,
+//      since `roundcube-core` debver 1.5~beta+dfsg.1-1).
+//      * The changelog.Debian says "[enchant] is better supported and more
+//        flexible [than pspell]".
+//
+// Notes:
+//  * Settings mostly in order of appearance in `defaults.inc.php`.
+//  * This does not include all, but many settings.
+{% set m = pillar['lawandorga_mail'] %}
+
+$config = [];
+
+
+
+// ------------
+// SQL DATABASE
+// ------------
+
+// `sslmode=require` forces a TLS-encrypted connection to the database server.
+//  - Roundcube's pgsql driver passes recognised libpq parameters (incl.
+//    sslmode) from the DSN query string through to PDO.
+{# The password must be URL-encoded: Roundcube's DSN parser rawurldecode()s it,
+   and an unencoded `@ : / ? #` would corrupt the DSN.  Jinja's `urlencode`
+   escapes everything except the unreserved set and `/`, hence the explicit
+   replace for `/`. #}
+{% set _db_password = pillar['passbolt'][m['database_password_uuid']] | urlencode | replace('/', '%2F') %}
+$config['db_dsnw'] = "pgsql://{{ m['database_user'] }}:{{ _db_password }}@{{ m['database_server_address'] }}:{{ m['database_server_port'] }}/{{ m['database_name_webmail'] }}?sslmode=require";
+
+
+
+// -----------------
+// LOGGING/DEBUGGING
+// -----------------
+
+$config['log_driver'] = 'syslog';
+$config['syslog_id'] = 'roundcube'; // Default.
+
+$config['smtp_log'] = true;         // Default.
+$config['log_logins'] = true;
+
+// Relate Roundcube session to IMAP session.
+$config['imap_log_session'] = true;
+
+// Debugging.  Defaults.
+$config['session_debug'] = false;
+$config['sql_debug'] = false;
+$config['imap_debug'] = false;
+$config['smtp_debug'] = false;
+
+
+
+// ----
+// IMAP
+// ----
+
+$config['imap_host'] = 'tls://localhost:143';
+$config['imap_auth_type'] = 'PLAIN';
+
+// Specific to Dovecot and its configuration.
+$config['imap_delimiter'] = '.';
+$config['imap_vendor'] = 'dovecot';
+$config['imap_dual_use_folders'] = true;
+
+// CONSIDER: IMAP cache.
+//  - also: imap_cache_*
+//$config['imap_cache'] = 'db';
+
+// CONSIDER: Messages cache.
+//  - also: messages_cache_*
+//  - Requires QRESYNC and CONDSTORE extensions enabled at Dovecot.
+//$config['messages_cache'] = 'db';
+
+
+
+// ----
+// SMTP
+// ----
+
+$config['smtp_host'] = 'tls://localhost:587';
+$config['smtp_user'] = '%u';  // Default.
+$config['smtp_pass'] = '%p';  // Default.
+$config['smtp_auth_type'] = 'PLAIN';
+$config['smtp_helo_host'] = '{{ m['webmail_domain'] }}';
+
+
+
+// ------------
+// TLS settings
+// ------------
+
+// See <https://www.php.net/manual/en/context.ssl.php>.
+
+$default_tls_options = [
+  'verify_peer' => true,
+  'verify_peer_name' => true,
+  'allow_self_signed' => false,
+  'capath' => '/etc/ssl/certs',
+
+  // Ciphers for TLS <= 1.2.
+  //  - Implicitly require TLSv1.2 here.
+  //    - We apparently cannot restrict to TLSv1.3.
+  //  - See Dovecot's `tls.conf#ssl_cipher_list`.
+  //  - We could restrict this to a single cipher.
+  'ciphers' => 'TLSv1.2+HIGH+ECDHE+aRSA+CHACHA20:HIGH+ECDHE+aRSA+AESGCM:@STRENGTH',
+
+  'disable_compression' => true,  // See Dovecot's `tls.conf#ssl_options`.
+
+  // "Security level"
+  //  - See <https://www.openssl.org/docs/man1.1.1/man3/SSL_CTX_get_security_level.html>.
+  //  - level 2 means >= 112 bits of security, >= 2048 bit RSA keys.
+  //  - We cannot go to a higher level or else the certificate verification
+  //    fails.
+  'security_level' => 2,
+];
+
+
+// `peer_name` must be a name in the certificate that Dovecot/Postfix serve (see
+// `states/lawandorga-mail/dovecot/files/base/tls.conf.j2#ssl_server_cert_file`
+// and `states/lawandorga-mail/postfix/files/main.cf.j2#smtpd_tls_chain_files`,
+// both pointing at /etc/letsencrypt/live/<letsencrypt_domainset>/).  We use
+// $letsencrypt_domainset, the lineage's first name, which is in the certificate
+// by construction.
+//  - Not $fqdn/$mail_dovecot_hostname/$mail_postfix_myhostname: those are the
+//    mail identity (Dovecot's `hostname`, Postfix' `myhostname`) and need not
+//    be covered by the certificate.  They only work here as long as they happen
+//    to be listed in the `letsencrypt` pillar's domainset.
+$config['imap_conn_options'] = [
+  'ssl' => array_replace($default_tls_options, [
+    'peer_name' => '{{ m['letsencrypt_domainset'] }}',
+  ]),
+];
+
+$config['smtp_conn_options'] = [
+  'ssl' => array_replace($default_tls_options, [
+    'peer_name' => '{{ m['letsencrypt_domainset'] }}',
+  ]),
+];
+
+
+
+// ------
+// SYSTEM
+// ------
+
+$config['enable_installer'] = false;  // Default.
+
+// CONSIDER:
+//$config['advanced_prefs']
+
+$config['support_url'] = '{{ m['web_app_mail_support_url'] }}';
+
+// TODO:
+//$config['skin_logo']
+
+$config['auto_create_user'] = true;   // Default.
+$config['user_aliases'] = false;      // Default.
+
+// Nginx already takes care of this.
+$config['force_https'] = false;       // Default.
+
+// This would need to be set to `true` if we were behind a proxy that hid the
+// connection being via HTTPS.
+$config['use_https'] = false;         // Default.
+
+// Allow browser-autocompletion.
+$config['login_autocomplete'] = 2;
+
+// Convert login names to lower case.  Default.
+$config['login_lc'] = 2;
+
+$config['login_rate_limit'] = 3;      // Default.
+
+// Only show "product" name, not software version.  Default.
+$config['display_product_info'] = 1;
+
+// Hostnames under which the webmail may be reached.
+//  - Roundcube compares an entry that contains no regular expression
+//    metacharacter (i.e., anything outside `[a-zA-Z0-9.:-]`) case-insensitively
+//    as a literal hostname, so plain hostnames suffice here.
+//    - See `rcube_utils::server_name()`.
+//  - The host's FQDN must be listed, even if users reach the webmail under
+//    another name: nginx' `$server_name` -- passed as `SERVER_NAME` via
+//    `fastcgi_params` and consulted by `rcube_utils::parse_host()` -- is always
+//    the *first* name of the matched server block, i.e. the first entry of the
+//    `letsencrypt` pillar's domainset.
+//    - An unlisted name makes Roundcube fall back to 'localhost' and log
+//      "Specified host is not trusted".
+$config['trusted_host_patterns'] = [
+{% for host in m['web_app_mail_trusted_hostnames'] %}
+  '{{ host }}',
+{% endfor %}
+];
+
+// Nginx already takes care of this.
+$config['x_frame_options'] = false;
+
+// $config['des_key'].
+//  - Separated into a distinct file for technical reasons.
+include_once('/etc/roundcube/key.conf.php');
+
+// See also Dovecot's TLS settings.
+$config['cipher_method'] = 'chacha20-poly1305';
+
+// Limit automated abuse.
+$config['sendmail_delay'] = 3;
+
+$config['max_message_size'] = '{{ m['mail_postfix_message_size_limit'] }}';
+
+// CONSIDER:
+//$config['max_recipients'] = 0;
+//$config['max_group_members'] = $config['max_recipients'];
+
+// This is a soft limit; keep at default.
+//$config['max_disclosed_recipients'] = 5;
+
+$config['product_name'] = '{{ m['web_app_mail_product_name'] }}';
+
+// Default: not set.
+$config['useragent'] = 'Roundcube Webmail';
+
+// This is relevant to privacy.  Default.
+$config['http_received_header'] = false;
+
+$config['line_length'] = 72;            // Default.
+$config['send_format_flowed'] = true;   // Default.
+
+// Allow full managing of identities.  Default.
+$config['identities_level'] = 0;
+
+// CONSIDER:
+//$config['client_mimetypes']
+
+$config['mime_types'] = '/etc/nginx/mime.types';
+
+// Check whether a domain in an e-mail address exists in the DNS.
+//  - Otherwise, Postfix should reject sending.
+$config['email_dns_check'] = true;
+
+// CONSIDER:
+//  - Note that a CSRF token is used regardless.
+//  - Requires matching nginx configuration.
+//$config['use_secure_urls']
+
+
+
+// -------
+// PLUGINS
+// -------
+
+$config['plugins'] = [
+  'dovecot_impersonate',
+  'dovecot_impersonate_smtp',
+  'login_page_extra_links',
+];
+
+
+
+// --------------
+// USER INTERFACE
+// --------------
+
+$config['message_sort_col'] = 'date';
+$config['message_sort_order'] = 'DESC';   // Default.
+
+// CONSIDER:
+//$config['list_cols']
+
+// CONSIDER:
+//$config['language']
+
+// Date and time formats.  Kept at defaults.
+$config['date_format'] = 'Y-m-d';
+//$config['date_formats']
+$config['time_format'] = 'H:i';
+//$config['time_formats']
+$config['date_short'] = 'D H:i';
+$config['date_long'] = 'Y-m-d H:i';
+
+// Special folders.
+$config['drafts_mbox'] = '{{ m['mail_dovecot_mailbox_name_drafts'] }}';
+$config['junk_mbox']   = '{{ m['mail_dovecot_mailbox_name_junk'] }}';
+$config['sent_mbox']   = '{{ m['mail_dovecot_mailbox_name_sent'] }}';
+$config['trash_mbox']  = '{{ m['mail_dovecot_mailbox_name_trash'] }}';
+
+// Dovecot does that.
+$config['create_default_folders'] = false;  // Default.
+
+$config['protect_default_folders'] = true;  // Default.
+$config['show_real_foldernames'] = false;   // Default.
+$config['enable_spellcheck'] = true;
+
+// This is relevant to privacy (do not set to 'shared').
+$config['spellcheck_dictionary'] = true;
+
+// Notes:
+//  * This requires `php-enchant` and some spell checker backend packages
+//    (e.g., `hunspell-<langcode>-<countrycode>`) to be installed.
+$config['spellcheck_engine'] = 'enchant';
+
+// Notes:
+//  * This defines the spell checker languages that are to be selectable, and
+//    their names to be displayed.
+//  * There must be language-specific spell checker backends installed for the
+//    here-configured languages.
+//  * If we did not define this, Roundcube would fall back to a builtin map.
+//    - See `/usr/share/roundcube/program/localization/index.inc`.
+//    - Unfortunately, this map is incomplete.
+//      - Notably, it lacks `de_AT`, which would apparently fall back to `de`,
+//        and then to `de_DE`.
+//        - I.e., `de_AT` and `de_DE` become indistinguishable.
+//        - This also means that `de_DE` and `de_AT` would not be possible to
+//          effectively be enabled at the same time; the former appears to
+//          shadow the latter.
+//          - Interestingly, this is not the case if manually specifying the
+//            same name twice below.
+$config['spellcheck_languages'] = [
+{% for backend in m['web_app_mail_spelling_backends'] %}
+{% for lang in backend['languages'] %}
+	'{{ lang['id'] }}' => '{{ lang['name'] }}',
+{% endfor %}
+{% endfor %}
+];
+
+// CONSIDER:
+//$config['keyservers']
+//$config['mailvelope_main_keyring']
+//$config['mailvelope_keysize']        - default 4096
+
+$config['html2text_links'] = 1;             // Default.
+$config['html2text_width'] = 72;
+
+
+
+// --------------------
+// ADDRESSBOOK SETTINGS
+// --------------------
+
+// Defaults.
+$config['address_book_type'] = 'sql';
+$config['autocomplete_addressbooks'] = ['sql'];
+$config['autocomplete_min_length'] = 1;
+
+$config['autocomplete_max'] = 16;
+
+// Default.
+$config['autocomplete_single'] = false;
+
+// Adjust to German standard.
+$config['address_template'] = '{street}<br/>{zipcode} {locality}<br/>{region}<br/>{country}';
+
+// Defaults.
+$config['addressbook_search_mode'] = 0;
+$config['contactlist_fields'] = ['name', 'firstname', 'surname', 'email'];
+$config['contact_search_name'] = '{name} <{email}>';
+$config['contact_form_mode'] = 'private';
+$config['collected_recipients'] = true;
+$config['collected_senders'] = true;
+
+
+
+// ----------------
+// USER PREFERENCES
+// ----------------
+
+$config['skin'] = 'elastic';  // Default.
+
+// Restrict skins (disallow 'classic').
+//  - Legal reason:
+//    - We put some legal links (legal notice, privacy notice, code) within the
+//      about section.
+//    - The 'classic' skin requires two clicks to reach the about section.
+//      - This is unlike the two here-allowed skins (one click).
+//    - At least the legal notice and privacy notice must be reachable in two
+//      clicks.
+//  - See also `roles/web/app/mail/tasks/main.yaml#about.html.j2`.
+$config['skins_allowed'] = [
+  'elastic',
+  'larry',
+];
+
+// Defaults.
+$config['addressbook_sort_col'] = 'surname';
+$config['addressbook_name_listing'] = 0;
+$config['timezone'] = 'auto';
+
+// Display HTML version of message by default, if any.  Default.
+//  - It is always possible to switch between the HTML and plain text version
+//    of a message (that has both).
+//  - This is debatable.  (CONSIDER: Change.)
+//  - There are security/privacy risks associated with HTML e-mail.
+//    - Roundcube has some protections against these.
+//      - E.g., it blocks embedded images, but offers to show them.
+//  - Our users likely expect to see HTML e-mail directly.
+//  - See also $config['htmleditor'].
+//  - See also Content-Security-Policy in
+//    `states/lawandorga-mail/roundcube/files/nginx-roundcube.server.conf.j2`.
+$config['prefer_html'] = true;
+
+// Notes:
+//  - Default.
+//  - Relevant to security/privacy.
+//  - See also Content-Security-Policy in
+//    `states/lawandorga-mail/roundcube/files/nginx-roundcube.server.conf.j2`.
+$config['show_images'] = 0;
+
+// Defaults.
+$config['message_extwin'] = false;
+$config['compose_extwin'] = false;
+
+// Always use HTML editor by default.
+//  - Notable alternative: '3'
+//    - Use HTML editor by default iff forwarding or replying to an HTML
+//      message.
+//    - A more strict setting would likely cause people to complain about
+//      broken formatting.
+//  - Reasoning: People expect all the fancy formatting they are likely used
+//    to to just work.
+//  - This is debatable.
+//  - See also $config['prefer_html'].
+//  - See also Content-Security-Policy in
+//    `states/lawandorga-mail/roundcube/files/nginx-roundcube.server.conf.j2`.
+$config['htmleditor'] = 1;
+
+// Defaults.
+$config['compose_save_localstorage'] = true;
+$config['prettydate'] = true;
+$config['draft_autosave'] = 300;
+$config['mail_read_time'] = 0;
+$config['logout_purge'] = false;
+$config['logout_expunge'] = false;
+$config['inline_images'] = true;
+$config['refresh_interval'] = 60;
+
+$config['check_all_folders'] = true;
+
+// Defaults.
+$config['display_next'] = true;
+$config['default_list_mode'] = 'list';
+$config['autoexpand_threads'] = 0;
+$config['reply_mode'] = 0;
+$config['strip_existing_sig'] = true;
+$config['show_sig'] = 1;
+
+$config['sig_below'] = true;
+
+// Default.
+$config['sig_separator'] = true;
+
+$config['search_mods'] = [
+  '*' => [
+    'subject' => 1,
+    'from' => 1,
+  ],
+  $config['sent_mbox'] => [
+    'subject' => 1,
+    'to' => 1,
+  ],
+];
+
+$config['addressbook_search_mods'] =
+  ['name'=>1, 'firstname'=>1, 'surname'=>1, 'email'=>1, '*'=>1];
+
+// Defaults.
+$config['delete_junk'] = false;
+$config['mdn_requests'] = 0;  // Relevant to privacy.
+$config['mdn_default'] = 0;
+$config['dsn_default'] = 0;
+$config['reply_same_folder'] = false;
+
+$config['forward_attachment'] = true;
+
+// Default.
+$config['spellcheck_before_send'] = false;
+
+// CONSIDER (defaults shown):
+//$config['default_font'] = 'Verdana';
+//$config['default_font_size'] = '10pt';
+
+$config['message_show_email'] = true;
+
+// Default.
+$config['reply_all_mode'] = 0;

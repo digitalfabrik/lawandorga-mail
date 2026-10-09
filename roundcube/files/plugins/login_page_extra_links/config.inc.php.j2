@@ -1,0 +1,14 @@
+<?php
+{% set m = pillar['lawandorga_mail'] %}
+
+$config['login_page_extra_links'] =
+  [ [ 'label' => 'Legal notice'
+    , 'url' => '{{ m['product_url_legal_notice'] }}'
+    ]
+  , [ 'label' => 'Privacy notice'
+    , 'url' => '{{ m['product_url_privacy_notice'] }}'
+    ]
+  , [ 'label' => 'Code'
+    , 'url' => '{{ m['product_url_code_mail'] }}'
+    ]
+  ];

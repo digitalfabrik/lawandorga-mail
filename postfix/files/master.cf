@@ -1,0 +1,110 @@
+# Postfix master(5) configuration file.
+#  - History
+#    - Written for postfix debver 3.5.13-0+deb11u1.
+#      - Influenced by configuration written for older versions.
+#    - Reviewed for debver 3.7.6-0+deb12u2.
+#      - Consulted:
+#        - changes in `/usr/share/postfix/master.cf.dist`
+#        - changes in master(5)
+#        * See also `../templates/main.cf.j2`s "History".
+#      - No change made.
+#  - See
+#    - master(5),
+#    - `/usr/share/postfix/master.cf.dist`.
+#      - That is the default configuration on Debian.
+#      - This configuration is largely based on that.
+#  - Services that are enabled by default, but not enabled here, are explicitly
+#    listed as a comment where they are listed in the default `master.cf`.
+#    - See also the "General notes" in our `main.cf`.
+
+
+# service type  private unpriv  chroot  wakeup  maxproc command + args
+#               (yes)   (yes)   (no)    (never) (100)
+
+smtp      inet  n       -       y       -       -       smtpd
+
+# Allow authenticated submission on the submission port (STARTTLS).
+#  - The ${submission_*} variables are all defined in `main.cf`.
+#  - Keep in sync with the `submissions` service below, which applies the same
+#    policy over implicit TLS.
+submission inet n       -       y       -       -       smtpd
+  -o syslog_name=postfix/submission
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=yes
+  -o smtpd_tls_mandatory_protocols=$submission_tls_mandatory_protocols
+  -o smtpd_tls_mandatory_ciphers=$submission_tls_mandatory_ciphers
+  -o tls_high_cipherlist=$submission_tls_high_cipherlist
+#  -o tls_eecdh_auto_curves=$submission_tls_eecdh_auto_curves
+  -o tls_preempt_cipherlist=$submission_tls_preempt_cipherlist
+  -o smtpd_helo_restrictions=$submission_helo_restrictions
+  -o smtpd_relay_restrictions=$submission_relay_restrictions
+  -o milter_macro_daemon_name=ORIGINATING
+  -o milter_default_action=$submission_milter_default_action
+  -o cleanup_service_name=$submission_cleanup_service_name
+
+# Authenticated submission over implicit TLS (RFC 8314), port 465.
+#  - Same policy as `submission` above; the only difference is wrappermode,
+#    i.e. TLS from the first byte instead of via STARTTLS.
+#    - RFC 8314 recommends implicit TLS over STARTTLS for message submission;
+#      most modern clients try 465 first.
+#    - ${smtpd_tls_wrappermode} makes TLS mandatory by itself; we still set
+#      ${smtpd_tls_security_level} explicitly, to be obvious about it.
+#  - The service name `submissions` (not `smtps`) is resolved via
+#    `/etc/services`, which Debian ships in `netbase` (installed by the
+#    firewall state).
+#  - The port is opened in `ports-postfix.nft`.
+submissions inet n      -       y       -       -       smtpd
+  -o syslog_name=postfix/submissions
+  -o smtpd_tls_wrappermode=yes
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=yes
+  -o smtpd_tls_mandatory_protocols=$submission_tls_mandatory_protocols
+  -o smtpd_tls_mandatory_ciphers=$submission_tls_mandatory_ciphers
+  -o tls_high_cipherlist=$submission_tls_high_cipherlist
+#  -o tls_eecdh_auto_curves=$submission_tls_eecdh_auto_curves
+  -o tls_preempt_cipherlist=$submission_tls_preempt_cipherlist
+  -o smtpd_helo_restrictions=$submission_helo_restrictions
+  -o smtpd_relay_restrictions=$submission_relay_restrictions
+  -o milter_macro_daemon_name=ORIGINATING
+  -o milter_default_action=$submission_milter_default_action
+  -o cleanup_service_name=$submission_cleanup_service_name
+
+pickup    unix  n       -       y       60      1       pickup
+cleanup   unix  n       -       y       -       0       cleanup
+
+# See `main.cf', `header-checks/privacy.re`.
+submission_cleanup unix n -     y       -       0       cleanup
+  -o header_checks=$submission_header_checks
+
+qmgr      unix  n       -       n       300     1       qmgr
+tlsmgr    unix  -       -       y       1000?   1       tlsmgr
+rewrite   unix  -       -       y       -       -       trivial-rewrite
+bounce    unix  -       -       y       -       0       bounce
+defer     unix  -       -       y       -       0       bounce
+trace     unix  -       -       y       -       0       bounce
+#no verify
+flush     unix  n       -       y       1000?   0       flush
+#no proxymap
+#no proxywrite
+smtp      unix  -       -       y       -       -       smtp
+#no relay
+showq     unix  n       -       y       -       -       showq
+error     unix  -       -       y       -       -       error
+retry     unix  -       -       y       -       -       error
+discard   unix  -       -       y       -       -       discard
+#no local
+virtual   unix  -       n       n       -       -       virtual
+lmtp      unix  -       -       y       -       -       lmtp
+anvil     unix  -       -       y       -       1       anvil
+scache    unix  -       -       y       -       1       scache
+postlog   unix-dgram n  -       n       -       1       postlogd
+#no maildrop
+#no uucp
+#no ifmail
+#no bsmtp
+#no scalemail-backend
+#no mailman
+
+# SPF is handled by Rspamd (milter); no policyd-spf spawn service is defined.

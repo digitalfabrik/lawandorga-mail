@@ -1,0 +1,12 @@
+{
+    "name": "respiranto/dovecot_impersonate_smtp",
+    "description": "Amendment of dovecot_impersonate for SMTP",
+    "type": "roundcube-plugin",
+    "license": "GPL-2.0",
+    "authors": [
+        {
+            "name": "Einhard Leichtfuß",
+            "email": "alguien@respiranto.de"
+        }
+    ]
+}

@@ -1,0 +1,15 @@
+# Output base chain.
+#  - Egress is deliberately unrestricted: all outgoing connections are allowed.
+#    - There is therefore no outbound port allowlist and no out_outbound chain.
+#      Do not add per-port outbound rules here expecting them to restrict
+#      anything -- with `policy accept` they cannot.
+#    - Should egress filtering ever be wanted, the policy has to become `drop`
+#      first; only then do outbound accept rules have any effect.
+
+table inet filter {
+	chain output {
+		type filter hook output priority filter; policy accept;
+
+		ct state invalid drop
+	}
+}

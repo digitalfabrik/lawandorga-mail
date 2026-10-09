@@ -1,0 +1,7 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Identity map on the static (non-db) users.
+#  - See also
+#    `/ansible/roles/mail/dovecot/templates/dovecot/static-users.passwd.j2`.
+
+# Admin address.
+{{ m['mail_admin_address'] }} {{ m['mail_admin_address'] }}

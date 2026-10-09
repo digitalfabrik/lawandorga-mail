@@ -1,0 +1,34 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Mail storage.
+
+# See
+#  - `/etc/dovecot/conf.d/10-mail.conf`
+#  - <https://doc.dovecot.org/configuration_manual/mail_location/Maildir/>
+#  - <https://doc.dovecot.org/settings/core/>
+
+
+# `~` refers to the virtual user's home directory as queried from the database.
+#  - Dovecot 2.4 replaced `mail_location = maildir:~/mail` with the split
+#    `mail_driver` + `mail_path` settings.
+#  - See <https://doc.dovecot.org/main/core/config/mail_location.html>.
+mail_driver = maildir
+mail_path = ~/mail
+
+mail_uid = {{ m['mail_dovecot_storage_uid'] }}
+mail_gid = {{ m['mail_dovecot_storage_gid'] }}
+
+
+# Default.
+mail_fsync = optimized
+
+# Default.
+maildir_copy_with_hardlinks = yes
+
+
+# Indexing.
+
+# Default.
+mailbox_list_index = yes
+
+# Default no.
+mailbox_list_index_include_inbox = yes

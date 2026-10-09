@@ -1,0 +1,76 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Sieve Filtering
+
+# See
+#  - [0] <https://doc.dovecot.org/main/core/config/sieve/overview.html>
+#  - [1] `/etc/dovecot/conf.d/90-sieve.conf`
+#  - [2] <https://doc.dovecot.org/main/core/plugins/sieve.html>
+#  - [3] <https://doc.dovecot.org/main/core/summaries/settings.html>
+
+# Dovecot 2.4 migration notes:
+#  * The `plugin { ... }` wrapper no longer exists; plugin settings are now
+#    plain global settings.
+#  * The old single-line `sieve = file:~/sieve/scripts;active=~/sieve/active.sieve`
+#    is replaced by a `sieve_script <name> { ... }` named filter block.
+#  * `sieve_user_log` was renamed to `sieve_user_log_path`.
+
+
+# Personal (user-managed, e.g. via ManageSieve) Sieve scripts.
+#  - `sieve_script_path` replaces the old `file:~/sieve/scripts` part.
+#  - `sieve_script_active_path` replaces the old `active=~/sieve/active.sieve`.
+sieve_script personal {
+  sieve_script_type = personal
+  sieve_script_driver = file
+  sieve_script_path = ~/sieve/scripts
+  sieve_script_active_path = ~/sieve/active.sieve
+}
+
+# Unused.
+#sieve_default =
+#sieve_default_name =
+
+# CONSIDER:
+#sieve_global = /etc/dovecot/sieve/global
+#sieve_before*
+#sieve_after*
+
+# Notes:
+#  * Relevant to privacy.
+#  * See also `./logrotate.conf`.
+#  * Renamed from `sieve_user_log` in Dovecot 2.4.
+sieve_user_log_path = ~/sieve/active.log
+
+
+# `redirect` command.
+# Notes:
+#  * See `/doc/mail/dovecot/sieve/redirect.md`.
+#  * Prior to Pigeonhole v0.3.0, a value of 0 would make the number of
+#    redirects unlimited (instead of disabling them).
+sieve_max_redirects = 0
+sieve_redirect_envelope_from = recipient
+
+
+# Notes:
+#  * This is actually specific to the `subaddress` extension.
+#    * It is given here because:
+#      - (a) In the documentation, it is listed among the general settings
+#        for the sieve plugin.  [0]
+#      - (b) It has a generic name.
+#      - (c) (a) and (b) indicate that the setting might be used for more
+#        than the `subaddress` extension in the future.
+#  * See also the same setting in `mail/dovecot`'s `lmtp.conf`.
+recipient_delimiter = {{ m['mail_recipient_delimiter'] }}
+
+
+# The enabled Sieve extensions (an absolute list, replacing the defaults).
+#  - `sieve_extensions` is a Boolean List in Dovecot 2.4; the inline
+#    space-separated form assigns the set directly.
+sieve_extensions = body copy date encoded-character envelope fileinto foreverypart ihave imap4flags include index mailbox mime extracttext regex relational subaddress variables
+
+# Settings for `include` extension (keys only — left at default values).
+#sieve_include_max_inlines =
+#sieve_include_max_nesting_depth =
+
+# Settings for `variables` extension (keys only — left at default values).
+#sieve_variables_max_scope_size =
+#sieve_variables_max_variable_size =

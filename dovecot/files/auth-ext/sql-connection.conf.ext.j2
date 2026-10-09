@@ -1,0 +1,37 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Dovecot PostgreSQL connection.
+#  - This file contains a password and must get restrictive read permissions.
+#  - It is included from `dovecot.conf` (before `base/auth.conf`).
+
+# Dovecot 2.4 migration notes:
+#  * This replaces the old per-database `driver=pgsql` + `connect="..."` lines
+#    that lived in the three separate `sql-*.conf.ext` files.  In 2.4 the SQL
+#    connection is a single global configuration shared by every `passdb`/
+#    `userdb` block that uses `driver = sql`.
+#  * `connect = "host=... port=... ..."` is replaced by the `pgsql <host> { }`
+#    named filter with a `parameters { }` block of libpq key/value pairs.
+
+# See
+#  - <https://doc.dovecot.org/main/core/config/sql/postgresql.html>
+#  - <https://doc.dovecot.org/main/core/config/auth/databases/sql.html>
+#  - <https://www.postgresql.org/docs/current/libpq-connect.html>
+
+# Notes
+#  * The query input fields (username, domain / address) are all cast to lower
+#    case via the `| lower` filter; see the queries in `base/auth.conf`.
+
+
+sql_driver = pgsql
+
+# The filter label defaults `pgsql_host`; we also pass `hostaddr` explicitly
+# (as the old `connect` string did) to connect by address.
+pgsql {{ m['database_server_address'] }} {
+  parameters {
+    hostaddr = {{ m['database_server_address'] }}
+    port     = {{ m['database_server_port'] }}
+    dbname   = {{ m['database_name_mail'] }}
+    user     = {{ m['database_user'] }}
+    sslmode  = require
+    password = {{ pillar['passbolt'][m['database_password_uuid']] }}
+  }
+}

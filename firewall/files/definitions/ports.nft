@@ -1,0 +1,21 @@
+# (destination) ports.
+
+# Note: There are also some aliases built-in (e.g., `http', `whois').
+
+# Note: Only inbound ports are defined here.  Egress is unrestricted, so there
+# are no definitions for the ports we merely connect out to (DNS, NTP, the Salt
+# master, the PostgreSQL server, ...).  See `../output/base.nft`.
+
+define port_tcp_ssh = 22
+
+# Yes, HTTP/3 also uses UDP; we only accept TCP, though.
+define port_both_http = 80
+define port_both_https = 443
+
+define port_tcp_smtp = 25
+# Submission, with STARTTLS (587) and implicit TLS (465).
+define port_tcp_smtp_submission = 587
+define port_tcp_smtps = 465
+# IMAP, with STARTTLS (143) and implicit TLS (993).
+define port_tcp_imap = 143
+define port_tcp_imaps = 993

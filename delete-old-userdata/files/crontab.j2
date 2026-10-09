@@ -1,0 +1,7 @@
+# Delete data for accounts not (anymore) present in the DB, daily.
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=root
+
+# m  h dom mon dow  user                                        command
+ 19  5   *   *   *  {{ m['mail_dovecot_storage_user'] }}  /usr/local/lib/mail-delete-old-userdata/delete-old-userdata.bash --delete

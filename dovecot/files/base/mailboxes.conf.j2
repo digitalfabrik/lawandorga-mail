@@ -1,0 +1,46 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Mailboxes configuration.
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/namespace/>
+#  - <https://doc.dovecot.org/admin_manual/namespaces/>
+#  - `/etc/dovecot/conf.d/10-mail.conf`
+#  - `/etc/dovecot/conf.d/15-mailboxes.conf`
+#  - <https://doc.dovecot.org/settings/core/>
+
+
+namespace inbox {
+  inbox = yes
+
+  # Both default.
+  type = private
+  subscriptions = yes
+
+
+  # Default mailboxes.
+  #  - All below mailboxes are created and subscribed to by default.
+  #    - (`auto = subscribe`)
+
+  mailbox "{{ m['mail_dovecot_mailbox_name_drafts'] }}" {
+    special_use = \Drafts
+    auto = subscribe
+  }
+
+  mailbox "{{ m['mail_dovecot_mailbox_name_junk'] }}" {
+    special_use = \Junk
+    auto = subscribe
+  }
+
+  mailbox "{{ m['mail_dovecot_mailbox_name_trash'] }}" {
+    special_use = \Trash
+    auto = subscribe
+  }
+
+  # In the default configuration (`/etc/dovecot/conf.d/15-mailboxes.conf`),
+  # there are two \Sent mailboxes configured.
+  #  - We are picky.
+  mailbox "{{ m['mail_dovecot_mailbox_name_sent'] }}" {
+    special_use = \Sent
+    auto = subscribe
+  }
+}

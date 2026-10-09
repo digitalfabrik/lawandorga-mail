@@ -1,0 +1,16 @@
+# IMAP
+
+# See
+#  - `/etc/dovecot/conf.d/20-imap.conf`
+#  - <https://doc.dovecot.org/settings/core/>
+
+# See also
+#  - `./services.conf`
+
+
+# Only send the name (Dovecot).
+#  - In Dovecot 2.4 `imap_id_send` is a String List; its default is
+#    `name=%{dovecot:name}`, i.e. it already sends only the name ("Dovecot").
+#    The old `name *` value is no longer valid syntax, so we rely on the
+#    default.
+#imap_id_send = name=%{dovecot:name}

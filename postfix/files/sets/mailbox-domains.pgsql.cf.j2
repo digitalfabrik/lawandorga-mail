@@ -1,0 +1,23 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Set of all database domains.
+#  - Static domains (notably, $myorigin), should generally not be in the
+#    database, but in case any of them is, it is explicitly ignored.
+#  - See also `/doc/mail/postfix/aliases/database.md`.
+
+hosts = {{ m['database_server_address'] }}:{{ m['database_server_port'] }}
+user = {{ m['database_user'] }}
+password = {{ pillar['passbolt'][m['database_password_uuid']] }}
+# Require a TLS-encrypted connection.  Postfix's pgsql client has no sslmode
+# field, but libpq parses the dbname value as a conninfo string when it
+# contains '=', which lets us set sslmode here.
+dbname = dbname={{ m['database_name_mail'] }} sslmode=require
+
+expansion_limit = 1
+
+query =
+  SELECT 1
+  FROM core_maildomain
+  WHERE name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }})
+  AND   is_active
+  AND   name = '%s'
+  ;

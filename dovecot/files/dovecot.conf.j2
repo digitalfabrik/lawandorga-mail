@@ -1,0 +1,145 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Dovecot configuration.
+#
+# * History
+#   * Note: This applies to all Dovecot configuration files.
+#   - Written for Dovecot 2.3.13 (debver 1:2.3.13+dfsg1-2+deb11u1).
+#     - Somewhat influenced by configuration written for earlier versions.
+#   - Revised for debver 1:2.3.19.1+dfsg1-2.1.
+#     - Consulted:
+#       - `/usr/share/doc/dovecot-core/changelog.Debian.gz`
+#       - `/usr/share/doc/dovecot-core/NEWS.Debian.gz` (nothing)
+#       - `/usr/share/doc/dovecot-core/NEWS.gz`
+#         - This is a (terse) changelog.
+#       - changes in `/etc/dovecot/` (few)
+#       - on-line documentation, where referred to in the changelog
+# * Documentation:
+#   - <https://doc.dovecot.org/>
+#     - Individual settings: <https://doc.dovecot.org/settings/>
+#       - Important settings: <https://doc.dovecot.org/settings/core/>
+#         - All options considered.
+#     - Syntax: <https://doc.dovecot.org/configuration_manual/config_file/>
+#     - All documentation seeming relevant read.
+#   - <https://wiki2.dovecot.org/>
+#     - To be phased out in favor of <https://doc.dovecot.org/>.
+#     - Also available at `/usr/share/doc/dovecot-core/wiki/`
+#     - This has not been consulted much.
+#   - `/usr/share/doc/dovecot-core/README.Debian`
+#   - The default configuration files at `/etc/dovecot/`.
+#     - Note that we overwrite the main `dovecot.conf` file.
+
+
+# General notes:
+#  * Generally ignored settings (see also Postfix's `main.cf`):
+#    - timeouts, and similar,
+#      - I did generally not read their documentation.
+#    - settings where the default seemed fine and
+#      - unlikely to ever change, or
+#      - the setting not that relevant, or
+#      - we prefer to trust the (future) default,
+#    - settings not relevant to the current configuration (e.g., POP3).
+#  * Below are only general settings.
+#    - More specific configuration is found in included files.
+#      - Unlike in the default `dovecot.conf`, we include these explicitly.
+
+
+# CONSIDER:
+#  - valid_chroot_dirs
+#    - We'd likely want to restrict this to mountpoints with nosuid mount
+#      option.
+#    - See <https://wiki.dovecot.org/Chrooting>.
+
+
+
+## Dovecot 2.4 required version settings.
+
+# See
+#  - <https://doc.dovecot.org/main/installation/upgrade/2.3-to-2.4.html>
+#  - <https://doc.dovecot.org/main/core/summaries/settings.html#dovecot_config_version>
+# Notes:
+#  * `dovecot_config_version` MUST be the very first setting in this file.
+#    - It pins the configuration semantics, avoiding unexpected changes on
+#      future upgrades.
+#  * `dovecot_storage_version` pins the on-disk storage format.
+#  * These use the same versioning as Dovecot; 2.4.0 is the baseline for the
+#    2.4.x series shipped on Debian Trixie (2.4.1).
+dovecot_config_version = 2.4.0
+dovecot_storage_version = 2.4.0
+
+
+
+## Hostname and admin addresses.
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/common_configuration/>
+
+# Similar to default.
+#  - The old `%{if;%d;ne;;%d;<default>}` is replaced by the `domain` and
+#    `default` filters: use the recipient's domain, or the default domain if
+#    empty.
+#    - See <https://doc.dovecot.org/main/core/settings/variables.html>.
+postmaster_address = postmaster@%{user | domain | default('{{ m['mail_default_domain'] }}')}
+
+hostname = {{ m['mail_dovecot_hostname'] }}
+
+mail_server_admin = mailto:{{ m['mail_admin_address'] }}
+
+
+
+## General settings
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/general_settings/>
+#  - <https://doc.dovecot.org/configuration_manual/general_backend_settings/>
+
+protocols = lmtp imap
+
+# Default.
+#  - This might otherwise be considered relevant for privacy.
+verbose_proctitle = no
+
+# Notably contains TZ, by default.
+#  - See also our systemd service override.conf.
+#import_environment =
+
+# Temporary storage.
+#  - The scan interval specifies how often to scan and delete (!) stale
+#    temporary files.
+#  - This is relevant for privacy.
+#    - Note, however, that `/tmp` is not backed up, so the total storage
+#      time is not increased by that.
+#    - Note further that /tmp is on a tmpfs (see fstab configuration), so
+#      there is no risk of "deleted" data to remain on disk post removal.
+#      - I.e., we do not need to worry about "secure" deletion.
+mail_temp_dir = /tmp
+mail_temp_scan_interval = {{ m['privacy_mail_dovecot_tmp_cleanup_frequency_days'] }}days
+
+
+
+## Include other configuration files.
+
+# Note that the order of inclusion matters.
+#  - Notably, variables need to be defined before use.
+#  - See <https://doc.dovecot.org/configuration_manual/config_file/>.
+
+!include /etc/dovecot/conf/explicit/base/services.conf
+!include /etc/dovecot/conf/explicit/base/tls.conf
+
+# The SQL connection (driver, host, credentials) is defined in a separate,
+# restricted-permission file, as it contains the database password.
+#  - In Dovecot 2.4 the connection is a global setting (`sql_driver` + a
+#    `pgsql { }` block); the passdb/userdb `sql` blocks in `auth.conf`
+#    reference it implicitly.
+!include /etc/dovecot/conf/external/sql-connection.conf.ext
+
+!include /etc/dovecot/conf/explicit/base/auth.conf
+!include /etc/dovecot/conf/explicit/base/logging.conf
+
+!include /etc/dovecot/conf/explicit/base/mail-storage.conf
+!include /etc/dovecot/conf/explicit/base/mailboxes.conf
+
+!include /etc/dovecot/conf/explicit/base/lmtp.conf
+!include /etc/dovecot/conf/explicit/base/imap.conf
+
+
+!include /etc/dovecot/conf/implicit/global/*.conf

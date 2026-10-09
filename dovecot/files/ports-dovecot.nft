@@ -1,0 +1,13 @@
+# Inbound ports served by Dovecot, see `base/services.conf.j2`.
+#  - 143: IMAP with STARTTLS (mandatory, see `base/tls.conf.j2`).
+#  - 993: IMAP with implicit TLS.
+
+table inet filter {
+	set in_ports_allow {
+		type inet_proto . inet_service
+		elements = \
+			{ tcp . $port_tcp_imap
+			, tcp . $port_tcp_imaps
+			}
+	}
+}

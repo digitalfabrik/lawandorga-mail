@@ -1,0 +1,7 @@
+# See `/usr/libexec/unbound-helper`.
+RESOLVCONF=false
+ROOT_TRUST_ANCHOR_UPDATE=true
+ROOT_TRUST_ANCHOR_FILE='/var/lib/unbound/root_key/root.key'
+
+# See `/etc/resolvconf/update.d/unbound`.
+USE_RESOLVCONF_FORWARDS=false

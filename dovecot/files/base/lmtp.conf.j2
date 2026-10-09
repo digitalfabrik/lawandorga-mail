@@ -1,0 +1,38 @@
+{% set m = pillar['lawandorga_mail'] %}
+# LMTP (mail delivery from Postfix)
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/protocols/lmtp_server/>
+#  - `/etc/dovecot/conf.d/20-lmtp.conf`
+#  - `/etc/dovecot/conf.d/15-lda.conf`
+#  - <https://doc.dovecot.org/settings/core/>
+
+# See also
+#  - `./services.conf`
+
+
+
+# How to handle detail elements (usually user+detail@domain).
+#  - See <https://doc.dovecot.org/configuration_manual/protocols/lmtp_server/#address-extension-delivery>.
+
+# Notes:
+#  * Postfix (importantly) sets the same recipient delimiter.
+#  * The sieve plugin also sets the same recipient delimiter.
+recipient_delimiter = {{ m['mail_recipient_delimiter'] }}
+
+# Default.
+lmtp_save_to_detail_mailbox = no
+
+
+
+# Default.
+lmtp_add_received_header = yes
+
+# Default.
+#lmtp_hdr_delivery_address = final
+
+
+
+protocol lmtp {
+  !include /etc/dovecot/conf/explicit/snippet/lmtp-mail-plugins.conf
+}

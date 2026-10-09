@@ -1,0 +1,119 @@
+{% set m = pillar['lawandorga_mail'] %}
+# TLS settings
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/dovecot_ssl_configuration/>
+#  - `/etc/dovecot/conf.d/10-ssl.conf`
+#  - <https://doc.dovecot.org/settings/core/>
+
+# See also
+#  - Postfix' TLS configuration.
+#  - Nginx' TLS configuration.
+#  - OpenSSH's crypto settings.
+
+# Notes:
+#  * Compare the settings for SMTP submission in Postfix's `main.cf`.
+#    - Like there, we want relatively restrictive settings.
+
+
+# Note that connections from localhost may still use plain text.
+#  - See also $login_trusted_networks.
+ssl = required
+
+
+# These files are loaded upon service start and reload, so a change of them
+# needs a reload of Dovecot.
+#  - See
+#    - the Salt watch/notify,
+#    - the ACME update script's reload_services().
+#  - Dovecot 2.4 renamed `ssl_cert`/`ssl_key` to `ssl_server_cert_file`/
+#    `ssl_server_key_file`.  These now take a plain path (the old `<` prefix,
+#    meaning "read from file", is no longer used).
+#  - Certificates are obtained by certbot (via the nginx state) and stored
+#    under /etc/letsencrypt/live/<letsencrypt_domainset>/.  Renewal reloads
+#    Dovecot (see the certbot renewal cron's --post-hook).
+#    - The lineage is named after the domainset, not after `hostname`/$fqdn:
+#      the mail identity need not be the certificate's first name.
+ssl_server_cert_file = /etc/letsencrypt/live/{{ m['letsencrypt_domainset'] }}/fullchain.pem
+ssl_server_key_file = /etc/letsencrypt/live/{{ m['letsencrypt_domainset'] }}/privkey.pem
+
+
+# We would like to have TLSv1.3 (only).
+#  - Problem: Some clients that we want to support do not support TLS1.3.
+#    - See Postfix's `main.cf#submission_tls_mandatory_protocols`.
+#  - Centrally managed via the `tls_versions` pillar (pillars/tls-params.sls),
+#    which is ordered minimum-version-first; we take its first element.
+#    - Shared with Nginx and Apache, so a bump there applies here too.
+ssl_min_protocol = {{ pillar.get('tls_versions')|first }}
+
+
+# TLSv1.3 ciphers.
+#  - We do not restrict these, the TLS 1.3 ciphers are all deemed quite good.
+#    - See also Postfix's `main.cf#submission_tls_high_cipherlist`.
+#ssl_cipher_suites =
+
+# TLSv1.2 ciphers.
+#  - Centrally managed via the `tls_cipher_suites` pillar
+#    (pillars/tls-params.sls), shared with Nginx and Apache.  Refresh it from
+#    <https://ssl-config.mozilla.org/>.
+#  - This is an explicit list of cipher names, not an OpenSSL class expression;
+#    it replaces the former `HIGH+ECDHE+aRSA+CHACHA20:HIGH+ECDHE+aRSA+AESGCM:
+#    @STRENGTH`.  Deviations from that stricter list, on this RSA-only host:
+#    - The ECDHE-ECDSA-* entries are inert -- we serve an RSA certificate.
+#    - It admits DHE-RSA suites, i.e. non-EC Diffie-Hellman, which
+#      `wiki/SSL.DovecotConfiguration.txt' advises against.  See
+#      $ssl_server_dh_file below.
+#    - It admits ECDHE-RSA-AES128-SHA, which is CBC/SHA1 rather than an AEAD
+#      cipher.  It is last in the pillar's order, but as we honour the client's
+#      preference (see $ssl_server_prefer_ciphers below), a client that asks
+#      for it will get it -- it is not merely a last-resort fallback.
+#    - There is no @STRENGTH, so the pillar's order governs preference; we do
+#      not preempt the client's order anyway (see below).
+#  - Does not apply to TLSv1.3 (see $ssl_cipher_suites above).
+#  - See also
+#    - Postfix' `main.cf#tls_high_cipherlist`.
+#    - Roundcube's `$config['imap_conn_options']`.
+ssl_cipher_list = {{ pillar.get('tls_cipher_suites') }}
+
+# Do not prefer the server's order of ciphers over client's.
+#  - See Postfix's `main.cf#submission_tls_preempt_cipherlist`.
+#  - Dovecot 2.4 renamed `ssl_prefer_server_ciphers` (bool) to
+#    `ssl_server_prefer_ciphers` (string); `client` = prefer the client's
+#    order (equivalent to the old `no`).
+ssl_server_prefer_ciphers = client
+
+
+# Elliptic curves to use for ECDH (key exchange).
+#  - See Postfix's `main.cf#submission_tls_eecdh_auto_curves`.
+#  - Also known as "Groups" in OpenSSL.
+#  - Applies to both TLSv1.2 and TLSv1.3.
+ssl_curve_list = X25519:X448:prime256v1:secp521r1:secp384r1
+
+# DH parameters.
+#  - $ssl_cipher_list (from the `tls_cipher_suites` pillar) does admit DHE-RSA
+#    suites, so this is no longer a pure-ECDH configuration.  We still leave
+#    the setting unset: without a DH file OpenSSL 3 negotiates one of its
+#    built-in FFDHE groups, so those suites work without our own parameters.
+#  - If we wanted to pin our own parameters instead, the
+#    `lawandorga-mail.tls-dhparams` state already generates them at
+#    {{ m['tls_dhparams_path'] }} (used by Postfix's
+#    `main.cf#smtpd_tls_dh1024_param_file`).
+#  - Note: TLSv1.3 exclusively supports ECDH.
+#  - Dovecot 2.4 renamed `ssl_dh` to `ssl_server_dh_file`.
+#  - See <https://doc.dovecot.org/main/core/config/ssl.html>.
+#ssl_server_dh_file =
+
+
+# SSL options.
+#  * Disable Compression:
+#    - Compression can leak information, see, e.g., the CRIME vulnerability.
+#    - Disabled by default in Dovecot (since version 2.3).
+#      - In Dovecot 2.4 the only accepted values are `compression` and
+#        `no_ticket`; the old `no_compression` token no longer exists (one
+#        would instead *add* `compression` to enable it).  We therefore only
+#        set `no_ticket`.
+#  * Disable session tickets:
+#    - See <https://words.filippo.io/we-need-to-talk-about-session-tickets/>.
+#      - Claims the problems are fixed in TLS 1.3.
+#  - See also Postfix's `main.cf#tls_ssl_options`.
+ssl_options = no_ticket

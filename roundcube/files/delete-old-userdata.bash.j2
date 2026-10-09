@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+
+# Delete data from webmail database for users that are no longer present in the
+# mail database, nor are static users.
+
+# Copyright 2022, 2023 Einhard Leichtfuß
+
+{% set m = pillar['lawandorga_mail'] %}
+
+# Notes:
+#  * This script is very similar to the deletion script for the mail contents.
+#    * Note, however, that static users are treated differently.
+#  * Roundcube only has one "user" for each group account.
+#    * Thus, we do not need to be concerned with
+#      the {{ m['mail_dovecot_group_account_separator'] }}.
+
+# Dependencies:
+#  - bash
+#  - coreutils (`comm`, `mktemp`, `rm`; Debian Priority=required)
+#  - bsdutils (`logger`; Debian Priority=required)
+#  - postgresql-client (`psql`)
+
+
+source -- '{{ m['bash_aux_lib_basic_path'] }}' || {
+  printf 'Fatal Error.\n' >&2
+  exit 1
+}
+
+
+
+##################
+## Configuration
+
+typeset -r cfg_SYSLOG_TAG=webmail/delete-old-userdata
+
+# This is the facility that `roundcube` uses by default.
+typeset -r cfg_SYSLOG_FACILITY=user
+
+typeset -r cfg_PGSQL_HOST='{{ m['database_server_address'] }}'
+typeset -r cfg_PGSQL_PORT='{{ m['database_server_port'] }}'
+typeset -r cfg_PGSQL_USER='{{ m['database_user'] }}'
+{# A `'` in the password would close the shell quoting below; `'\''` closes,
+   escapes the literal quote, and reopens. #}
+typeset -r cfg_PGSQL_PASSWORD='{{ pillar['passbolt'][m['database_password_uuid']] | replace("'", "'\\''") }}'
+typeset -r cfg_PGSQL_DBNAME_WEBMAIL='{{ m['database_name_webmail'] }}'
+typeset -r cfg_PGSQL_DBNAME_MAIL='{{ m['database_name_mail'] }}'
+
+# See the `deluser` script.
+typeset -r cfg_QUERY_WEBMAIL_ACCOUNTS='SELECT username FROM users;'
+
+# Notes:
+#  * See also `states/lawandorga-mail/postfix/files/sets/users.pgsql.cf.j2`.
+#  * We ignore whether the domain is active (`d.is_active`).
+#    - Data for accounts at non-active domains should not be deleted.
+read -r -d '' cfg_QUERY_MAIL_ACCOUNTS << 'EOF' ||:
+SELECT addr.localpart || '@' || d.name
+FROM       core_mailaddress addr
+INNER JOIN core_maildomain  d    ON addr.domain_id = d.id
+WHERE d.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }})
+AND   addr.is_default
+;
+EOF
+typeset -r cfg_QUERY_MAIL_ACCOUNTS
+
+typeset -ra cfg_STATIC_ACCOUNTS=('{{ m['mail_admin_address'] }}')
+
+# Notes:
+#  * This notably serves to protect against the risk of SQL injection.
+#    - This should not actually matter, if the `deluser` script
+#      properly handles arbitrary strings given as user names.
+#      - This seems to be the case
+#        (roundcube-core debver 1.4.13+dfsg.1-1~deb11u1).
+#  * See also
+#    - `states/lawandorga-mail/dovecot/files/base/auth.conf.j2#auth_username_chars`
+typeset -r cfg_ACCOUNT_FORMAT_REGEX='^[a-z0-9._@-]+$'
+
+typeset -r \
+  cfg_RC_DELUSER_SCRIPT_PATH='/usr/share/roundcube/bin/deluser.sh'
+
+
+
+##############
+## Main code
+
+{% raw %}
+
+
+# Whether to actually delete the old data, and not only list its names.
+typeset g_DELETE_OLD_DATA
+
+typeset g_TMPDIR
+typeset g_ORIGDIR
+
+
+function main()
+{
+  parse_args "$@"
+
+  setup_temporary_working_directory
+
+  get_accounts_from_webmail_db accounts.webmail
+  get_accounts_from_mail_db    accounts.mail
+  add_static_accounts          accounts.mail
+
+  setminus accounts.webmail-only accounts.webmail accounts.mail
+
+  delete_accounts_from_webmail_db accounts.webmail-only
+}
+
+
+function on_exit()
+{
+  if [[ -v g_TMPDIR ]]
+  then
+    destroy_temporary_working_directory
+  fi
+}
+
+
+function log()
+{
+  [[ $# -eq 2 ]]
+  local -r loglevel="$1"
+  local -r message="$2"
+  logger -t "$cfg_SYSLOG_TAG" -p "${cfg_SYSLOG_FACILITY}.${loglevel}" \
+    -- "$message"
+}
+
+
+function error()
+{
+  [[ $# -ge 1 ]]
+  local -ra messages=( "$@" )
+  log error "${messages[*]}"
+  printf '%s\n' "${messages[@]}" >&2
+  return 1
+}
+
+
+function setup_temporary_working_directory()
+{
+  g_ORIGDIR="$(pwd)"
+  g_TMPDIR="$(mktemp -d -t tmp.XXXXXX)"
+
+  cd "$g_TMPDIR"
+
+  # We write sensible data to temporary files.
+  umask 077
+
+  # Do not overwrite existing files.
+  set -o noclobber
+}
+
+
+function destroy_temporary_working_directory()
+{
+  cd "$g_ORIGDIR"
+
+  (
+    set +o noglob
+    rm -d "$g_TMPDIR"/* "$g_TMPDIR"
+  )
+}
+
+
+function setminus()
+{
+  [[ $# -eq 3 ]]
+  local -r result="$1"
+  local -r op1="$2"
+  local -r op2="$3"
+
+  local -r op1_sorted='setminus.op1.sorted'
+  local -r op2_sorted='setminus.op2.sorted'
+
+  sort --zero-terminated -- "$op1" > "$op1_sorted"
+  sort --zero-terminated -- "$op2" > "$op2_sorted"
+
+  comm --zero-terminated -23 -- "$op1_sorted" "$op2_sorted" > "$result"
+
+  rm "$op1_sorted"
+  rm "$op2_sorted"
+}
+
+
+function _psql()
+{
+  # Note that giving the password in the environment is safe, at least due to
+  # our setting hidepid=2 on /proc (see fstab configuration).
+  #  - Even otherwise, `/proc/<pid>/environ` seems to have restrictive
+  #    permissions.
+  # PGSSLMODE=require forces a TLS-encrypted connection to the database server.
+  PGPASSWORD="$cfg_PGSQL_PASSWORD" PGSSLMODE=require psql \
+    --host="$cfg_PGSQL_HOST" \
+    --port="$cfg_PGSQL_PORT" \
+    --username="$cfg_PGSQL_USER" \
+    --no-password \
+    --no-psqlrc \
+    --no-readline \
+    --set='ON_ERROR_STOP=on' \
+    --echo-errors \
+    --quiet \
+    --tuples-only --no-align \
+    --record-separator-zero \
+    "$@"
+}
+
+
+function get_accounts_from_webmail_db()
+{
+  [[ $# -eq 1 ]]
+  local -r file="$1"
+
+  _psql \
+    --dbname="$cfg_PGSQL_DBNAME_WEBMAIL" \
+    --command="$cfg_QUERY_WEBMAIL_ACCOUNTS" \
+    --output="$file"
+}
+
+
+function get_accounts_from_mail_db()
+{
+  [[ $# -eq 1 ]]
+  local -r file="$1"
+
+  _psql \
+    --dbname="$cfg_PGSQL_DBNAME_MAIL" \
+    --command="$cfg_QUERY_MAIL_ACCOUNTS" \
+    --output="$file"
+}
+
+
+function add_static_accounts()
+{
+  [[ $# -eq 1 ]]
+  local -r file="$1"
+
+  if [[ ${#cfg_STATIC_ACCOUNTS[@]} -gt 0 ]]
+  then
+    printf '%s\0' "${cfg_STATIC_ACCOUNTS[@]}" >> "$file"
+  fi
+}
+
+
+# Note that this honors ${g_DELETE_OLD_DATA}.
+function delete_accounts_from_webmail_db()
+{
+  [[ $# -eq 1 ]]
+  local -r file="$1"
+
+  local accounts_to_be_deleted
+  mapfile -t -d '' accounts_to_be_deleted < "$file"
+
+  if [[ ${#accounts_to_be_deleted[@]} -gt 0 ]]
+  then
+    local account
+    for account in "${accounts_to_be_deleted[@]}"
+    do
+      if ! [[ "$account" =~ $cfg_ACCOUNT_FORMAT_REGEX ]]
+      then
+        error "Account does not match required format: ${account}"
+      fi
+
+      if $g_DELETE_OLD_DATA
+      then
+        if "$cfg_RC_DELUSER_SCRIPT_PATH" "$account" >/dev/null
+        then
+          log notice "Deleted account from webmail database: ${account}"
+        else
+          error "Failed to delete account from webmail database: ${account}"
+        fi
+      else
+        printf 'Account would be deleted from webmail database: %s\n' \
+          "$account"
+      fi
+    done
+  else
+    if $g_DELETE_OLD_DATA
+    then
+      log info 'No account to delete from webmail database.'
+    else
+      printf 'No account would be deleted from webmail database.\n'
+    fi
+  fi
+}
+
+
+function parse_args()
+{
+  if [[ $# -ne 1 ]]
+  then
+    printf 'Wrong number of arguments given.\n' >&2
+    exit 1
+  fi
+
+  case "$1" in
+    --delete)
+      g_DELETE_OLD_DATA=true
+      ;;
+    --list-only)
+      g_DELETE_OLD_DATA=false
+      ;;
+    *)
+      printf 'Invalid argument given: %s\n' "$1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+
+main "$@"
+
+
+{% endraw %}

@@ -1,0 +1,1311 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Main Postfix configuration.
+#  - History
+#    - Written for postfix debver 3.5.6-1+b1 (2022-04-03--2022-06-12).
+#      - This provided a base for this configuration.
+#    - Thoroughly revised, and improved for debver 3.5.13-0+deb11u1.
+#      - This is arguably the first version of *this* configuration.
+#      - A lot of documentation read, see "List of read documentation" further
+#        below.
+#    - Revised for debver 3.7.6-0+deb12u2.
+#      - Consulted:
+#        - `/usr/share/doc/postfix/changelog.Debian.gz`
+#        - `/usr/share/postfix/main.cf.debian`
+#        - `/usr/share/postfix/main.cf.tls`
+#        - <https://www.postfix.org/announcements.html>
+#        - `/usr/share/doc/postfix/RELEASE_NOTES.gz`
+#        - RELEASE_NOTES-3.6 (from Debian source package)
+#        - `/usr/share/doc/postfix/COMPATIBILITY_README.gz`
+#        - changes in postconf(5)
+#      - Checked all defaults claimed below.
+#    - 2023-12-30: Added mitigation for CVE-2023-51764
+#      (${smtpd_forbid_bare_newline} - new in 3.5.23 / 3.7.9).
+#  - Future:
+#    - Version 3.9:
+#      - Deprecates ${smtpd_tls_dh1024_param_file}.
+#      - Deprecates ${smtpd_tls_eecdh_grade}.
+#  - Documentation:
+#    - /usr/share/doc/postfix/
+#    - postconf(5)
+#      - Use this as primary source for documentation on individual settings.
+#    - /usr/share/postfix/main.cf.dist | /etc/postfix/main.cf.proto
+#    - /usr/share/postfix/main.cf.debian + /usr/share/postfix/main.cf.tls
+#      - `debconf` amends these to generate a basic `main.cf`.
+#  - General e-mail documentation:
+#    - RFC 5321 (SMTP)
+#
+
+
+# General notes:
+#  * In the following, HELO may refer to the alternative of HELO and EHLO.
+#  * The words TODO, CONSIDER and RECONSIDER are used in comments wherever
+#    appropriate.
+#    - Their purpose is to serve as search keys to quickly identify things
+#      to do / to (re)consider.
+#  * Generally ignored settings (see also Dovecot's `dovecot.conf`):
+#    - timeouts, error codes, and similar,
+#      - Unless explicitly recommended (at non-ignored places).
+#      - I did generally not read their documentation.
+#      - Exceptions: Relatively large default times (>= 1d).
+#        - These may be relevant for privacy.
+#    - settings where the default seemed fine and
+#      - unlikely to ever change, or
+#      - the setting not that relevant, or
+#      - we prefer to trust the (future) default,
+#    - settings not relevant to the current configuration, notably:
+#      - Most local(8) specific settings,
+#      - all settings specific to any of
+#        - postscreen(8),
+#        - proxymap(8),
+#        - qmqpd(8),
+#        - verify(8),
+#        - tlsproxy(8).
+#        * These services are all not used (and not enabled in `master.cf`).
+#      * In case of significant changes to the configuration, always search for
+#        possible related configuration settings.
+#  * Some settings left at the default value are explicitly mentioned to show
+#    their relevance.
+#  * Some defaults are specified in postconf(5), others can only be seen from
+#    `postconf -d`.
+#    - The latter defaults are always explicitly annotated as such below.
+#  * Settings documented in read _README files were generally considered more
+#    important.
+#  * All variables prefixed with `submission_` are custom variables (for SMTP
+#    submission) and must be explicitly used in `master.cf` to have an effect.
+
+
+# Notes on potential changes of this configuration:
+#  * Spam filter: Make sure to avoid the potential for backscatter.
+#    - See <https://en.wikipedia.org/wiki/Backscatter_(email)>.
+
+
+# List of read documentation.
+#  * Generally, the documentation of debver 3.5.13-0+deb11u1 was read.
+#    - For consideration of later changes see "History" above.
+#  * Not necessarily in the given order.
+#  * Not necessarily exhaustive.
+#  - /usr/share/doc/postfix/[A-Z]+(\.gz)?
+#    * All documentation considered.
+#    - README (skimmed over)
+#    - README.Debian
+#    - LINUX_README
+#    - OVERVIEW (skimmed over)
+#    - BASIC_CONFIGURATION_README
+#    - STANDARD_CONFIGURATION_README (the parts deemed relevant)
+#    - SOHO_README (skimmed over; not relevant)
+#    - COMPATIBILITY_README (skimmed over)
+#    - TLS_README
+#      - FORWARD_SECRECY_README
+#    - VIRTUAL_README
+#    - SASL_README (the part on Dovecot only)
+#    - DATABASE_README (excluding the details at the end)
+#      - DB_README (skimmed over)
+#      - PGSQL_README (skimmed over)
+#    - ADDRESS_REWRITING_README
+#    - CONTENT_INSPECTION_README (skimmed over)
+#      - BUILTIN_FILTER_README (but ignored)
+#      - BACKSCATTER_README (but ignored)
+#      - FILTER_REAME (skimmed over; ignored)
+#      - SMTPD_PROXY_README (only intro, decided against)
+#      - MILTER_README
+#    - SMTPD_ACCESS_README
+#    - RESTRICTION_CLASS_README (skimmed over)
+#    - SMTPD_POLICY_README (skimmed over)
+#    - LOCAL_RECIPIENT_README (not relevant; as long as $mydestination empty)
+#    - ADDRESS_CLASS_README (skimmed over; maybe read fully)
+#    - CONNECTION_CACHE_README (read intro; ignored)
+#    - ADDRESS_VERIFICATION_README (read intro; decided against)
+#    - BDAT_README (skimmed over)
+#    - ETRN_README (skimmed over)
+#    - VERP_README (skimmed over)
+#  - postconf(5) (read at the end; read all that seemed relevant (a lot!))
+
+
+# CONSIDER:
+#  - ${strict_*}
+#    - In general, this only helps identify incorrect usage while annoying the
+#      recipients in that case.
+#  - smtpd_delay_open_until_valid_rcpt = no
+#  - ${smtpd_log_access_permit_actions}
+#  - ${smtp_per_request_deadline}, ${smtpd_per_request_deadline}
+#  - Performance tuning:
+#    - CONNECTION_CACHE_README
+#    - TUNING_README
+
+
+
+############
+## Testing
+
+# When performing potentially harmful modification to the configuration,
+# (consider to) enable the following.
+#soft_bounce = yes
+
+# Default.
+helpful_warnings = yes
+
+
+
+##################
+## Compatibility
+
+# This should normally be the current Postfix version number (<major>.<minor>).
+compatibility_level = 3.7
+
+backwards_bounce_logfile_compatibility = no
+
+
+
+###################
+## Basic settings
+
+# Defaults:
+#queue_directory = /var/spool/postfix  (`postconf -d' default)
+#queue_minfree = 0
+#mail_name = Postfix
+#mail_owner = postfix
+#maillog_file =         (empty - log to syslog)
+#syslog_facility = mail
+#syslog_name = postfix  (effectively; see `postconf -d')
+
+
+
+##################
+## Documentation
+
+# Notes:
+#  - The settings below are (`postconf -d`) defaults.
+#  - They are only given explicitly due to the postinst scripts of the `postfix`
+#    and `postfix-doc` packages setting them explicitly with `postconf -e`.
+#  - This way, these postinst scripts do not cause modification of this file,
+#    which would be reversed by Ansible, where the Ansible modification notice
+#    might surprise the admin.
+#  - See also a corresponding bug report, which, w.r.t. this issue, concluded
+#    with not considering this a bug [worth fixing].
+#    - <https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1035350#34>
+
+readme_directory = /usr/share/doc/postfix
+html_directory = /usr/share/doc/postfix/html
+
+
+
+################################
+## Host[-name] and IP settings
+
+# Notes:
+#  * This MUST resolve to an adress RR (unless it is an address literal) as
+#    per RFC 5321 - when used in the EHLO/HELO message.
+#    - CNAME->A is not sufficient.
+#  * The resolved address should be the actual public IP address of the server
+#    (or the NAT, if any).
+#    - RFC 5321 says, the remote server MAY verify that, but MUST NOT refuse
+#      to accept a message based on this.
+#  * This should (!) additionally match the reverse DNS entry for our global
+#    IP address (FCrDNS).  [0, 1]
+#    - This is not an RFC requirement (or even a SHOULD, AFAIK), but some
+#      mailservers may expect it or include this in their junk score.  [0, 1]
+#      - See also ${smtpd_client_restrictions} below.
+myhostname = {{ m['mail_postfix_myhostname'] }}
+#smtp_helo_name = $myhostname  -- default
+#smtpd_banner = $myhostname ESMTP $mail_name  -- default
+
+# Not used.
+#  - Deliberately an invalid domain so we can identify any related
+#    configuration error.
+mydomain = mydomain.invalid
+
+# This must be contained in one of
+#  - ${virtual_mailbox_domains},
+#  - ${virtual_alias_domains}.
+myorigin = {{ m['mail_default_domain'] }}
+
+# We do not want to accept any mail via local(8).
+#  - This does not suffice.  See "local(8) delivery" section.
+#  - Use ${virtual_mailbox_domains} and ${virtual_alias_domains} to specify
+#    domains we handle mail for.
+mydestination =
+
+# Serve and deliver over both IPv4 and IPv6.
+#  - The host has a working IPv6 address with forward-confirmed reverse DNS,
+#    and the SPF record authorizes it, so outbound IPv6 delivery is accepted by
+#    providers that require this (notably Google, Microsoft).
+#  - The firewall is family-agnostic: `table inet filter` and the
+#    `inet_proto . inet_service` port sets cover IPv6 as well (see
+#    `ports-postfix.nft`), and ICMPv6 is accepted (see `input/base.nft`).
+#  - Note that publishing an AAAA record while this is `ipv4` makes senders
+#    that prefer IPv6 hit a refused connection and defer the mail.
+inet_protocols = all
+
+# If we were behind a NAT, we'd have to configure it's public IP address here.
+#  - See also: BASIC_CONFIGURATION_README.
+#proxy_interfaces
+
+inet_interfaces = all
+
+# Allow unauthenticated outbound mail only from this host.
+#  - The first sets ${mynetworks} to local IP addresses.
+#  - See also `reject_unauth_destination'.
+#  - Note that there is no `relay` service configured in `master.cf`, unlike
+#    by default.
+mynetworks_style = host
+relay_domains =
+
+# Deliver outgoing mail directly.
+relayhost =
+
+
+
+###################
+## General / misc
+
+# Do not fail fatally on table lookup failure (default).
+#  - An error message is, however, logged.
+daemon_table_open_error_is_fatal = no
+
+# Only allow root and $mail_owner to view and flush the queue.
+authorized_mailq_users =
+authorized_flush_users =
+
+# "Enable long, non-repeating, queue IDs (queue file names)." - postconf(5)
+enable_long_queue_ids = yes
+
+# Who may send mail locally.  Default.
+#authorized_submit_users = static:anyone
+
+# This probably does not matter; we only have virtual users.
+biff = no
+
+# How long to keep an undeliverable [bounce] mail in the queue.
+#  - This is relevant for privacy.
+maximal_queue_lifetime = {{ m['privacy_mail_postfix_queue_max_lifetime_days'] }}d
+bounce_queue_lifetime = {{ m['privacy_mail_postfix_queue_max_lifetime_days'] }}d
+
+# How soon to get a warning on a not yet delivered email message.
+delay_warning_time = 1h
+
+# Inform senders that were told about a delay of a now successful delivery.
+confirm_delay_cleared = yes
+
+# What to send postmaster mail for:
+#  - This is relevant for privacy.
+#  - This is currently everything configurable except "bounce", "delay",
+#    "policy", "protocol".
+#    - "protocol" yields very many (annoying) results.
+#  - We might want to reduce this, should we get too much such mail.
+notify_classes = 2bounce, data, resource, software
+
+# Note: Dovecot (importantly) sets the same recipient delimiter.
+recipient_delimiter = {{ m['mail_recipient_delimiter'] }}
+
+# Message size limit.
+#  - Default: 10000 KiB.
+message_size_limit = {{ m['mail_postfix_message_size_limit'] }}
+
+# Default; debatable.
+#allow_min_user = no
+
+# The default is for planned (!) backwards compatibilty.
+#  - We do not need that.
+#  - By "example.com" we should never also mean "sub.example.com".
+parent_domain_matches_subdomains =
+
+# Log hostname if "verifiable", else "unknown".  Default.
+smtpd_peername_lookup = yes
+
+# Default (`postconf -d`).  Ignored for DNSSEC lookups.
+smtp_cname_overrides_servername = no
+
+# `postconf -d' default.
+# If this were not empty, this might (I don't know) give a problem with DKIM.
+undisclosed_recipients_header =
+
+# Do not allow XVERP via SMTP.
+#  - See
+#    - postconf(5)#smtpd_authorized_verp_clients
+#    - VERP_README
+#    - https://en.wikipedia.org/wiki/Variable_envelope_return_path
+#  - This is effectively the default.
+#    - postconf(5) is contradicting itself w.r.t. to the default, though.
+smtpd_authorized_verp_clients =
+
+# Default; debatable.
+#enable_threaded_bounces = no
+
+
+
+############
+## Privacy
+
+# Do not show the table name in "User unknown" responses.
+show_user_unknown_table_name = no
+
+# VRFY (& EXPN).
+#  - This may be used to check existence of e-mail addresses.
+#  - See also <https://cr.yp.to/smtp/vrfy.html>.
+#    - "[...] a few clients do VRFY before RCPT and do not send mail is VRFY
+#      is rejected."
+#    - Recommends always replying with code 252 to VRFY.
+#    - Recommends disabling EXPN.
+#  - EXPN does not seem to be supported by Postfix.
+#  - Note that the same information can be obtained via `RCPT TO`.
+#    - It only takes a little longer.
+#  - Leave enabled.
+#disable_vrfy_command = no
+
+# See also
+#  - ${maximal_queue_lifetime},
+#  - ${bounce_queue_lifetime},
+#  - ${notify_classes},
+#  - ${smtpd_sasl_authenticated_header},
+#  - the "Builtin filter" section.
+
+
+
+###################
+## Authentication
+
+# See SASL_README.
+
+# SASL auth, handled by Dovecot.
+#  - Only allowed via the submission services -- port 587 (STARTTLS) and port
+#    465 (implicit TLS) -- see `master.cf'.
+#    - This way, we can relatively easily set submission specific settings
+#      (via `master.cf', `-o').
+#    - Both enable it via `-o smtpd_sasl_auth_enable=yes'; it stays off for the
+#      `smtp' service on port 25 below.
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/dovecot-auth
+smtpd_sasl_auth_enable = no
+
+# Restrict SASL auth to TLS.
+smtpd_tls_auth_only = yes
+
+# Restrict SASL mechanism to PLAIN.
+#  - We place the same restriction on Dovecot's end.
+#    - See `/ansible/roles/mail/dovecot/templates/dovecot/base/auth.conf.j2`.
+#  - This is effectively redundant.
+#    - Naturally, this cannot widen the actual authentication methods allowed
+#      by the Dovecot auth backend.
+#    - Further, the server only lists authentication methods allowed by the
+#      backend (in reply to EHLO).
+#      - Tested with postfix debver 3.7.10-0+deb12u1.
+#      - This was not clear to me from the documentation (but makes sense).
+smtpd_sasl_mechanism_filter = plain
+
+# Authentication security options for SASL login (default).
+#  - We are happy with PLAIN login.
+#    - We are wrapped in TLS.
+#    - We enforce PFS for submission, see ${submission_tls_*}.
+smtpd_sasl_security_options = noanonymous
+
+# Do not put the SASL authenticated user name in the Received header
+# (default).
+#  - Privacy.
+#  - See also ${submission_header_checks}.
+smtpd_sasl_authenticated_header = no
+
+# The below would allow SASL login without domain name (default: empty).
+#smtpd_sasl_local_domain = $myorigin
+
+
+
+########
+## TLS
+
+# See TLS_README, FORWARD_SECRECY_README.
+
+# General note on crypto:
+#  * E-Mail is largely only opportunistically encrypted (SMTP between servers).
+#    - We should thus allow all reasonably good crypto, not just the "best".
+#    - If possible, better crypto should be preferred in negotiations with
+#      servers.
+#      - Such preferences can easily be ignored by servers (or, potentially, a
+#        MITM) just presenting one particular cryptographic algorithm.
+#    - Exception: Authenticated SMTP.
+#      - People with accounts can and must be required to use mandatory
+#        encryption.
+#      - Require a select few crypto algorithms.
+#      - Should be similar to OpenSSH and Dovecot TLS configuration.
+#    - Exception: DANE authenticated mail.
+#      - See discussion at `smtp_tls_mandatory_*'.
+#  * See also
+#    - Dovecot's TLS settings.
+#    - Nginx' TLS settings.
+#    - OpenSSH's crypto settings.
+
+
+#
+## General TLS configuration
+#
+
+# Recommended by postconf(5).
+tls_config_file = none
+
+# TLS options.
+#  - See Dovecot's `ssl.conf#ssl_options'.
+#  - postconf(5) deems "no_ticket" not needed.
+tls_ssl_options = no_compression
+
+# "high" security cipherlist 
+#  - This is only used for outbound mail.
+#    - See ${smtp_tls_mandatory_ciphers}.
+#    - See also ${submission_tls_high_cipherlist}.
+#  - It is set further below, in the Outbound TLS section.
+#tls_high_cipherlist
+
+# "medium" security cipherlist
+#  - This is used only for inbound TLS.
+#    - See ${smtpd_tls_ciphers}.
+#  - Intentionally left at default.
+#tls_medium_cipherlist
+
+# Elliptic curves to use for key exchange (client & server).
+#  - `postconf -d` default.
+#  - Prioritized list.
+#  - See also ${smtpd_tls_eecdh_grade}.
+#  - This includes NIST curves, whose security is somewhat debated.  [3, 3.1]
+#    - X25519 and X448 are, however, not that widely supported.
+#  - These are overridden for submission, see
+#    ${submission_tls_eecdh_auto_curves}.
+#  - See `openssl ecparam -list_curves` for options.
+#    - This does not include X448(7) and X25519(7), which are also possible.
+#  - See also FORWARD_SECRECY_README.
+#tls_eecdh_auto_curves = X25519 X448 prime256v1 secp521r1 secp384r1
+
+# Keep at default, as recommended.
+#tls_session_ticket_cipher = aes-256-cbc
+
+# Number of random bytes requested from tlsmgr(8) to seed internal PRNG.
+#  - "The default of 32 bytes (equivalent to 256 bits) is sufficient to
+#    generate a 128bit (or 168bit) session key." - postconf(5)
+#    - We may have 256 bit keys.
+#  - See also TLS_README.
+tls_daemon_random_bytes = 64
+
+# Number of random bytes read by tlsmgr(8) when (re-)seeding its PRNG pool.
+#  - "The default of 32 bytes (256 bits) is good enough for 128bit symmetric
+#    keys." - postconf(5)
+#    - We may have 256 bit keys.
+#  - See also TLS_README.
+tls_random_bytes = 64
+
+
+#
+## Outbound/Client TLS configuration (smtp)
+#
+
+# Use the DNS only for host lookup (default).
+smtp_host_lookup = dns
+
+# Allow DANE verification for outgoing connections.
+#  - This requires a local validating DNS resolver.
+#  - For domains/hosts without TLSA record, encryption is opportunistic.
+#  - The "dane" security level implies the usage of "mandatory" ciphers,
+#    even though encryption is not actually mandatory.
+#  - The below claimed ${smtp_tls_dane_insecure_mx_policy} effective default
+#    assumes ${smtp_tls_security_level} = `dane`.
+#  - CONSIDER: Add per-host settings (${smtp_tls_policy_maps}).
+smtp_dns_support_level = dnssec
+smtp_tls_security_level = dane
+#smtp_tls_dane_insecure_mx_policy = dane  - effective default (`postconf -d`)
+#smtp_tls_force_insecure_host_tlsa_lookup = no  - default
+#tls_dane_digests = sha512 sha256  - default
+
+# TLS logging.
+smtp_tls_loglevel = 1
+smtp_tls_note_starttls_offer = yes
+
+# CA to verify remote server certificates.
+#  - Not sure whether this is actually needed.
+#    - Would be, for "verify" encryption policy.
+#      - See also ${smtp_tls_policy_maps}.
+#    - Defined (like this) in `/usr/share/postfix/main.cf.tls`.
+#  - The corresponding smtpd_ setting is not needed; we do not verify client
+#    certificates.
+#  - This file must be present in the chroot.
+#    - Handled by Debian's `/usr/lib/postfix/configure-instance.sh`.
+#    - See also `/usr/share/doc/postfix/README.Debian.gz`.
+smtp_tls_CApath = /etc/ssl/certs
+
+# Note:
+#  * The corresponding smtpd_ setting is not recommended (while this one is).
+smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
+
+# Outbound "mandatory" TLS protocols and ciphers.
+#  - Actually used for all encrypted outbound mail, due to
+#    `smtp_tls_security_level = dane'.
+#  - We require relatively strong crypto:
+#    - PFS.
+#    - HIGH ciphers.
+#    - TLS version >= 1.2
+#      - Version 1.2 is from 2008.
+#        - Any reasonably well maintained server should support a version
+#          >= 1.2.
+#    - See also <https://wiki.mozilla.org/Security/Server_Side_TLS>.
+#  - Trade-off: Security with DANE authenticated server vs security with (DANE)
+#    unauthenticated servers.
+#    - For DANE authenticated servers, we want to require much; if no agreement
+#      on crypto can be reached, no connection is established.
+#      - If such a case comes up, we should be notified or get a complaint
+#        and can act upon it.
+#    - For (DANE) unauthenticated servers, we would like to require less; there
+#      is a fallback to plain text mail delivery.
+#    - Unauthenticated delivery is generally insecure, so we prefer to make
+#      DANE authenticated delivery reasonably secure.
+#      - We might also consider using TLS certificates to verify some servers.
+#        - See ${smtp_tls_policy_maps}.  (CONSIDER)
+#      - With unauthenticated encryption, there is always the risk of a MITM
+#        attack, including one that forces a downgrade to plain text.
+#    - Also, we assume that the servers that do not support our TLS
+#      requirements are few and generally small, for they should be deemed
+#      badly maintained.
+#      - This may be overly optimistic.
+#        - postconf(5)#smtp_tls_mandatory_protocols claims that
+#          "a few [SMTP servers with DANE TLSA records] only support TLS 1.0".
+#    - Note that this reasoning does not apply to inbound TLS.
+#      - We are unable to authenticate there.
+#      - It is the senders' job to ensure proper crypto.
+#      - We want to accept any mail.
+#    - Notes from FORWARD_SECRECY_README:
+#      - "Exchange 2003 and likely other MTAs" excluded with "cipher grades
+#        higher than 'medium'".
+#        - `openssl ciphers -v MEDIUM:@STRENGTH' only lists
+#          - (as of OpenSSL version 1.1.1n-0+deb11u3)
+#          - the only three TLSv1.3 ciphers (also part of HIGH), and
+#          - 4 SSLv3 ciphers.
+#            - SSLv3 is turned off, even by default.
+#          * Thus, "medium" is currently the same as "high" for us.
+#            - We'll definitely not go lower than the default "medium".
+#      - "Exchange 2003 servers largely do not support forward secrecy."
+#        - By the above, they do not even support "medium" ciphers.
+# - For DANE authenticated servers, "the 'aNULL' cipher-suites are
+#   transparently excluded", so we do not need to take care of that.
+#   - See postconf(5)#smtp_tls_security_level:dane.
+# - Notes on ciphers:
+#   - The cipher string is centrally managed via the `tls_cipher_suites` pillar
+#     (pillars/tls-params.sls), shared with Dovecot, Nginx and Apache; refresh
+#     it from <https://ssl-config.mozilla.org/>.
+#     - It is an explicit list of cipher names, replacing the former
+#       `HIGH+DHE:HIGH+ECDHE:@STRENGTH` class expression.  Consequently there
+#       is no @STRENGTH ordering; the pillar's own order governs preference,
+#       which we do not preempt anyway (see ${tls_preempt_cipherlist} below).
+#     - All entries provide PFS (DHE/ECDHE).  All are AEAD except the trailing
+#       ECDHE-RSA-AES128-SHA (CBC/SHA1); since we honour the peer's cipher
+#       preference, a peer that asks for that suite will get it.
+#     - CAUTION: an explicit list narrows outbound interoperability.  This
+#       setting binds only "mandatory" TLS, i.e. DANE-authenticated peers
+#       (${smtp_tls_security_level} = dane); peers without a TLSA record use
+#       opportunistic TLS and ${tls_medium_cipherlist} instead.  A DANE peer
+#       sharing no cipher with the list will fail to receive mail -- mandatory
+#       TLS does not fall back to cleartext.
+#   - See `openssl ciphers -v -s [cipher string]` for a list of ciphers.
+#   - See also Dovecot's `ssl.conf#ssl_cipher_list`.
+#   - Note: postconf(5) "strongly encourage[s]" us not to change the
+#     ${tls_high_cipherlist}.
+#   - The ${tls_high_cipherlist} is generally not only used for outbound
+#     connections; but in our case, it is.
+#     - See also ${submission_tls_high_cipherlist}.
+#   - The cipherlist does not apply to TLSv1.3.
+#     - (All TLSv1.3 ciphers are allowed regardless.)
+#     - The TLSv1.3 corresponding setting (in OpenSSL) is called ciphersuites.
+#     - There is no corresponding Postfix setting for TLSv1.3.
+#       - We could configure them using ${tls_config_file} and/or
+#         ${tls_config_name}.
+#     - That's OK; the TLSv1.3 ciphers are deemed pretty good.
+#     - See `openssl ciphers -v -tls1_3 -s' for options.
+# - See also ${tls_preempt_cipherlist} below.
+smtp_tls_mandatory_protocols = >={{ pillar.get('tls_versions')|first }}
+smtp_tls_mandatory_ciphers = high
+tls_high_cipherlist = {{ pillar.get('tls_cipher_suites') }}
+
+
+#
+## Inbound/Server TLS configuration (smtpd): General
+#
+
+# Opportunistic encryption.
+smtpd_tls_security_level = may
+
+# Private key and certificate chain, obtained by certbot (via the nginx state)
+# and stored under /etc/letsencrypt/live/<letsencrypt_domainset>/.
+#  - The lineage is named after the domainset, not after ${myhostname}/$fqdn:
+#    the mail identity need not be the certificate's first name.
+#  - smtpd_tls_chain_files takes a list where each key is immediately followed
+#    by its certificate chain; certbot's privkey.pem then fullchain.pem
+#    satisfies this.
+#  - Note that postfix appears to pick up changes in these files without reload
+#    or similar (unlike Dovecot, nginx).
+smtpd_tls_chain_files =
+  /etc/letsencrypt/live/{{ m['letsencrypt_domainset'] }}/privkey.pem,
+  /etc/letsencrypt/live/{{ m['letsencrypt_domainset'] }}/fullchain.pem
+
+smtpd_tls_loglevel = 1
+
+# Add TLS info to the Received header.
+#  - "Only  information that was recorded by the final destination can be
+#    trusted." - postconf(5)
+smtpd_tls_received_header = yes
+
+# Choose cipher suite by ordering on the server (not enabled).
+#  - postconf(5) gives arguments against it.
+#  - FORWARD_SECRECY_README: "not recommended for now"
+#  - Particular effect: PFS suites may be preferred - FORWARD_SECRECY_README.
+#  - Reason against: Adversaries can always downgrade by just listing a single
+#    cipher.
+#  - See also ${submission_tls_preempt_cipherlist}.
+#tls_preempt_cipherlist = yes
+
+# Elliptic curves to use for key exchange (inbound).
+#  * Note: This is effectively hard coded to "auto" in Postfix >= 3.6.
+#    - That is, this setting is ignored.
+#    - It is still referred to in several places in postconf(5) and, therefore,
+#      kept here.
+#  * Use the best curve supported by both sides (`postconf -d` default).
+#    - See ${tls_eecdh_auto_curves} above.
+#  - See also ${smtpd_tls_dh1024_param_file}.
+smtpd_tls_eecdh_grade = auto
+
+# Use custom DH parameters.
+#  - Suggested by FORWARD_SECRECY_README.
+#  - The 1024 in the name does not mean much.
+#  - Regenerated daily by a cron job.
+#    - FORWARD_SECRECY_README suggests an hourly or daily cron job.
+#    - See `ansible/roles/tls/dhparams/`.
+#  - Size debatable (RECONSIDER)
+#    - See `/ansible/roles/tls/dhparams/vars/main.yaml#tls_dhparams_size`.
+#    - Unsure if (a reasonable amount of) mailservers cannot work with 4096
+#      bit DH params.
+#    - FORWARD_SECRECY_README: Uses 2048.
+#    - Rec. 4096: https://www.kuketz-blog.de/postfix-ecdsa-rsa-keys-und-tls-konfiguration/
+#  - CONSIDER: Use `auto` (or the equivalent default ``) instead.
+#    - "custom local parameters are no longer recommended when using Postfix
+#      >= 3.7 built against OpenSSL 3.0.0"
+#      - postconf(5)#smtpd_tls_dh1024_param_file
+smtpd_tls_dh1024_param_file = {{ m['tls_dhparams_path'] }}
+
+
+#
+## Inbound/Server TLS settings (smtpd): non-"mandatory"
+#
+
+# Inbound non-"mandatory" TLS protocols and ciphers.
+#  - Apply to connections from regular SMTP servers/clients.
+#    - Authenticated clients are required to use encryption.
+#  - Keep at defaults.
+#  - As per TLS_README, "medium" "is essentially 128-bit encryption or
+#    better."
+#  - See also ${smtp_tls_mandatory_protocols}, ${smtp_tls_mandatory_ciphers}
+#    and ${tls_high_cipherlist} above.
+#  - CONSIDER: Disallow more old protocols (TLSv1, TLSv1.1).
+#    - See also: ${smtp_tls_mandatory_protocols}.
+#smtpd_tls_protocols = >=TLSv1
+#smtpd_tls_ciphers = medium
+
+
+#
+## Inbound/Server TLS settings (smtpd): "mandatory"
+#
+
+# Inbound "mandatory" TLS protocols and ciphers.
+#  - These are currently irrelevant.
+#    - Inbound "mandatory" TLS is only used with authenticated clients.
+#    - Authentication is only permitted via the submission port.
+#    - There are specific settings for submission below.
+#  - See also ${tls_high_cipherlist} above.
+#  - PFS.
+#    - This used to require TLSv1.3, which enforces PFS by itself.  It now
+#      follows the `tls_versions` pillar (minimum-version-first), so it is as
+#      strict as the rest of the fleet rather than stricter.  PFS is instead
+#      enforced through the cipher list, every entry of which is DHE or ECDHE.
+#    - This is a relaxation on paper only: as noted above, inbound "mandatory"
+#      TLS is unreachable here, since authentication is confined to the
+#      submission port, which has its own ${submission_tls_*} settings.
+smtpd_tls_mandatory_protocols = >={{ pillar.get('tls_versions')|first }}
+smtpd_tls_mandatory_ciphers = high
+
+
+#
+## Inbound/Server TLS settings (smtpd): (authenticated) submission
+#
+
+# Notes
+#  - Submission is configured to require encryption (see `master.cf').
+#    - The "mandatory" protocols and ciphers thus apply.
+#  - We enforce decent crypto.
+#    - If some of our users have a problem, this is not a big issue.
+#      - They would normally complain to us and we could find a solution.
+#    - In particular, we enforce PFS.
+#  - All submission_ variables must be used in `master.cf' (as always).
+
+# (submission) Inbound "mandatory" TLS protocols and ciphers.
+#  - Ideal scenario:
+#    - We can require as much as we want.
+#      - If users cannot work with these settings, they can complain to us.
+#    - We require TLSv1.3.
+#      - This enforces PFS.
+#  - Hurdles in practice:
+#    - Windows Mail, Microsoft Outlook do apparently not support TLS1.3.
+#  - Result:
+#    - Require TLS1.2 or later.
+#    - Enforce PFS (for TLS1.2) via the cipher list.
+#  - Taken from the `tls_versions` pillar (minimum-version-first); it currently
+#    yields TLSv1.2, i.e. the same value this setting had before.
+#  - See also the generic (unused) "mandatory" TLS settings.
+submission_tls_mandatory_protocols = >={{ pillar.get('tls_versions')|first }}
+submission_tls_mandatory_ciphers = high
+
+# (submission) Concrete ciphers to use.
+#  - From the `tls_cipher_suites` pillar, so this now matches Dovecot's
+#    `ssl_cipher_list` and the web stack exactly.
+#  - Relative to the former `HIGH+ECDHE+aRSA+CHACHA20:HIGH+ECDHE+aRSA+AESGCM:
+#    @STRENGTH`, this additionally admits DHE-RSA suites and the non-AEAD
+#    ECDHE-RSA-AES128-SHA; the ECDHE-ECDSA-* entries are inert, as we serve an
+#    RSA certificate.  The upside is broader client compatibility -- see the
+#    Windows Mail / Outlook note above.
+#  - See ${tls_high_cipherlist} above.
+#  - The setting does not apply to TLSv1.3.
+#    - See ${tls_high_cipherlist} above.
+#  - See also OpenSSH's `Ciphers`.
+submission_tls_high_cipherlist = {{ pillar.get('tls_cipher_suites') }}
+
+# (submission) Elliptic curves to use for key exchange.
+#  - Relies on `smtpd_tls_eecdh_grade = auto' above.
+#  - See ${tls_eecdh_auto_curves} above.
+#  - See also Dovecot's `ssl_curve_list`.
+#  - See also OpenSSH's `KexAlgorithms`.
+#  - Ideal scenario:
+#    - Allow X25519, X448 (the default minus the NIST curves).
+#  - Hurdles in practice:
+#    - Mail clients on macOS apparently do not support X25519, X448.
+#      - Non EC DH is apparently not supported either.
+#  - Result:
+#    - Keep at default.
+#  - Note: This variable would need to be added to `master.cf` to have any
+#    effect.
+#submission_tls_eecdh_auto_curves = X25519 X448 prime256v1 secp521r1 secp384r1
+
+# (submission) Do not honor server cipher order.
+#  - This is the default.
+#  - We might want to enable this if we allow weaker ciphers or develop a
+#    preference for one cipher over another.
+#  - See also ${tls_preempt_cipherlist}.
+submission_tls_preempt_cipherlist = no
+
+
+
+#######################
+## Address rewriting.
+
+# Notes
+#  * See also: ADDRESS_REWRITING_README.
+#    - Not all options discussed there listed here.
+#  * Commented settings indicate defaults (unless stated otherwise).
+#  * Some address rewriting cannot (apparently) be selectively disabled.
+#    - See ADDRESS_REWRITING_README.
+
+# Allow address rewriting for locally originating mail only (default).
+#local_header_rewrite_clients = permit_inet_interfaces
+#remote_header_rewrite_domain =
+
+# Store original recipient in an X-Original-To header (default).
+#  - This also has an effect on deduplication.
+#  - TODO: This does not appear to work.
+#    - See <https://mailing.postfix.users.narkive.com/P4OA8zgi/virtual-alias-maps-and-x-original-to>.
+enable_original_recipient = yes
+
+# When to propagate extensions (see also $recipient_delimiter).  Default.
+#propagate_unmatched_extensions = canonical, virtual
+
+swap_bangpath = no
+allow_percent_hack = no
+#append_at_myorigin = yes
+append_dot_mydomain = no
+#canonical_maps =
+#sender_canonical_maps =
+#recipient_canonical_maps =
+#masquerade_domains =
+#smtp_generic_maps =
+
+# Not actually address rewriting, but fits here.  Default.
+#always_add_missing_headers = no
+
+# virtual(5) aliases.
+#  - Replaces (some of) /etc/aliases functionality.
+#    - virtual(5) aliases are more capable, and have a different syntax.
+#  - The order below matters.
+#    - See `/doc/mail/postfix/aliases.md`,
+#      `/doc/mail/postfix/aliases/database.md`.
+#  - See also ${propagate_unmatched_extensions}.
+#  - See also ${smtpd_sender_login_maps}.
+virtual_alias_maps =
+	hash:{{ m['mail_postfix_maps_dir'] }}/static-aliases,
+	pgsql:{{ m['mail_postfix_maps_dir'] }}/postmaster-aliases.pgsql.cf,
+	pgsql:{{ m['mail_postfix_maps_dir'] }}/aliases.pgsql.cf
+
+
+
+######################
+## local(8) delivery
+
+# We do not want any mail to be delivered by local(8).
+#  - See also STANDARD_CONFIGURATION_README#"Postfix email firewall/gateway".
+#    - Beware of `local_recipient_maps =`
+#      and `local_transport = error:...`, which cause bounces, and, therefore,
+#      risk backscatter.
+#      - For the former, see LOCAL_RECIPIENT_README.
+#      - For the latter, see transport(5).
+#  - It would (by default) end up in ${mail_spool_directory}/USER and never be
+#    read.
+#  - All mail should be ultimately delivered by Dovecot as "virtual" mail.
+#  - We can apparently not (easily) get completely rid of local(8).
+#    - Setting ${local_transport} might be a way.
+#    - ${local_recipient_maps} is not of that much help.
+#  - local(8) gets mail destined to ${mydestination}, ${inet_interfaces} and
+#    ${proxy_interfaces}.
+#    - We can (and do) empty ${mydestination}, but not the others.
+#      - We can never empty ${inet_interfaces}.
+#      - ${proxy_interfaces} is to be non-empty iff we are behind a NAT.
+#  - We can stop mail received via SMTP to reach local(8).
+#    - See ${smtpd_reject_unlisted_recipient}, ${local_recipient_maps}.
+#  - We cannot (easily) stop mail received via, e.g., sendmail(1) to reach
+#    local(8).
+#    - It would need to be addressed to, e.g., `root@[127.0.0.1]'.
+#    - We could, for each relevant IP address, create a virtual alias.
+#      - This is error prone; IP addresses might change.
+#    - `local_destination_recipient_limit = 0' does not have the desired
+#      effect.
+#      - Also, it is unclear whether it would apply to local aliases(5).
+#  - We can have local(8) redirect any mail it gets to a "virtual" mail
+#    address.
+#    - See ${alias_maps}.
+#  - We intentionally do not reject any mail.
+#    - That should create a bounce (from localhost).
+#    - Any mail from localhost should be legitimate.
+
+# local(8) aliases.
+#  - See "local(8) delivery" intro above.
+#  - This only applies to mail that reaches the local(8) delivery agent.
+#    - See also: [2]
+#  - This only has the function to redirect any mail that reaches local(8)
+#    to a "virtual" mail address.
+#  - Use ${virtual_alias_maps} as a replacement for regular aliases.
+#  - The ${alias_maps} take precedence over potential ".forward" files.
+#  - The below seems to work without @domain, but this is not clear to me from
+#    the documentation.
+#    - One might expect that mail is then delivered "locally" (!) to the
+#      specified user, and not passed again through the larger postfix stack.
+#  - Using "@$myorigin" does not work.
+#    - "$myorigin" is likely considered a literal.
+#  - Actually, it is not even clear to me from the documentation whether a
+#    "static:" table can be used here, but it works.
+#    - What is clear to work are "regexp:" tables, which could do the same.
+#  - The given address must be reachable, naturally.
+#    - See ${virtual_alias_maps} (the content of the referenced file).
+#  - Any `+extension' part should be lost.
+#    - See also: ${propagate_unmatched_extensions}, ${recipient_delimiter}.
+alias_maps = static:{{ m['mail_default_local_recipient'] }}
+
+# This is just to update any ${alias_maps}, usually (always?) ultimately via
+# postalias(1).
+#  - Our ${alias_maps} need not be passed through that.
+alias_database =
+
+# Do not allow mail-to-commands, mail-to-files anywhere.
+#  - Not relevant; due to the static ${alias_maps}.
+allow_mail_to_commands =
+allow_mail_to_files =
+
+# If all fails, and mail is written via local(8), write it here.
+#  - This directory should not exist and would need to be created by Postfix.
+mail_spool_directory = /var/mail/local
+
+# For what to prepend a "Delivered-To:" header.
+#  - Kept at default.  Useful.
+#prepend_delivered_header = command, file, forward
+
+# Only set "Delivered-To:" for the first recipient in an aliasing chain.
+#  - Default.
+#frozen_delivered_to = yes
+
+# Do not treat "owner-SOMETHING" specially in aliases(5).
+#  - This should actually be relevant, given that our ${alias_maps} is a total
+#    map.
+owner_request_special = no
+expand_owner_alias = no
+
+# Not relevant; keep at default.
+#reset_owner_alias = no
+
+
+
+#############################
+## Relay and access control
+
+# See SMTPD_ACCESS_README
+
+# Basic setup (who may send to whom):
+#  * From this host (SMTP):
+#    - MAIL FROM: anybody
+#      - CONSIDER: Restrict to local domains, if possible.
+#    - RCPT TO: anybody
+#      - If destination local (incl. "virtual"): only virtual account or alias
+#    * Below settings only apply to SMTP.
+#      - sendmail(1) can do anything.
+#  * SASL authenticated users (via submission port):
+#    - MAIL FROM: themself or direct alias
+#    - RCPT TO: anybody
+#      - If destination local (incl. "virtual"): only virtual account or alias
+#  * Unauthenticated clients:
+#    - MAIL FROM: anybody
+#      - Note that we do not disallow local ("virtual") users or domains.
+#        - This is SPF's job.
+#        - See also `reject_sender_login_mismatch'.
+#    - RCPT TO: any virtual account or alias
+
+
+# Require adhering to certain bits of the SMTP protocol (RFC 5321, i.a.).
+
+# Require HELO (as does RFC 5321).
+smtpd_helo_required = yes
+
+# Require RFC-compliant '<>' enclosed addresses (and just those) (disabled).
+#  - Default.
+#strict_rfc821_envelopes = no
+
+# Disallow bare newlines around end-of-message `.` (require "\r\n.\r\n").
+#  - This addresses CVE-2023-51764.
+#    - See also <https://www.postfix.org/smtp-smuggling.html>.
+#  - Except for ${mynetworks} - (useful for testing via netcat).
+#    - Default.
+smtpd_forbid_bare_newline = normalize
+smtpd_forbid_bare_newline_exclusions = $mynetworks
+
+# Notes:
+#  * Future default (Postfix >= 3.9).
+#  * Possibly overlapping with or superseding our use of
+#    `reject_unauth_pipelining` in ${smtpd_data_restrictions}.
+smtpd_forbid_unauth_pipelining = yes
+
+
+# Reject "unlisted" recipients (enabled) / senders (disabled).
+#  - Only applies to domains (and IP adddresses) we are configured with.
+#  - Only "virtual" addresses [would] get through.
+#    - $local_recipient_maps is not null, but an empty map--just for this.
+#    - $relay_domains is empty.
+#    - $virtual_mailbox_maps has been properly defined--mostly for this.
+#    - We have no ${canonical_maps}.
+#    * This includes virtual aliases.
+#    * This is important (w.r.t. recipients).
+#      - See the section "local(8) delivery".
+#  * (recipients)
+#    - This rejects recipients during the SMTP session (after RCPT TO).
+#      - Without this, a rejection might come from Dovecot, which would come
+#        as a bounce, creating the possibility for backscatter.
+#      - Without this, mail from the wide internet might reach local(8), which
+#        accepts a lot (as a workaround).
+#        - See ${alias_maps}.
+#    - Warning: A malicious actor can abuse these settings to (cheaply) find
+#      out whether a user exists.
+#      - Otherwise, the mail would be rejected later (by Dovecot).
+#    - See also the `reject_authenticated_sender_login_mismatch' /
+#      `reject_sender_login_mismatch' access restriction.
+#  * (senders)
+#    - Reason not to enable:
+#      - This would disallow (unauthenticated) sending from localhost via
+#        SMTP.
+#        - Probably, most services use sendmail(1), but I would not want to
+#          bet on that for all services.
+#  - It is not clear from the documentation when (in relation to the below
+#    access restriction lists) these settings apply.
+#  - See also the `reject_unlisted_recipient', `reject_unlisted_sender' access
+#    restrictions.
+smtpd_reject_unlisted_recipient = yes
+smtpd_reject_unlisted_sender = no
+
+# Set ${local_recipient_maps} to an empty map.
+#  - This only affects ${smtpd_reject_unlisted_recipient} and
+#    ${smtpd_reject_unlisted_sender} (or `reject_unlisted_sender' and
+#    `reject_unlisted_recipient').
+#  - This does not affect for whom local(8) is ready to deliver mail to.
+#  - Reason: See ${smtpd_reject_unlisted_recipient},
+#    ${smtpd_reject_unlisted_sender}.
+#  - Setting this variable to an empty value is not equivalent.
+#  - `inline:{ }' is not a valid map.
+#  - An `internal:' map is used which should be empty by default (and never
+#    modified).
+#  - See also: DATABASE_README.
+local_recipient_maps = internal:empty
+
+
+# Access restriction lists:
+#  - Given in order (assuming no ETRN), see SMTPD_ACCESS_README.
+#  - ETRN settings given at the end.
+#  - CONSIDER: Split up all submission specific settings.
+#    - See also: ${receive_override_options}.
+
+# Delay rejection due to rejection lists until RCPT TO or ETRN.
+#  - Default, recommended by SMTPD_ACCESS_README, postconf(5).
+#  - Explicitly set, so that we can rely on it below.
+#  - Per the documentation, does not apply to
+#    ${smtpd_reject_unlisted_recipient}, ${smtpd_reject_unlisted_sender}.
+smtpd_delay_reject = yes
+
+# Semantically, before HELO.
+# Notes
+#  * One might want to enforce rDNS or FCrDNS here.
+#    - Neither is required by any common standard, AFAIK.
+#    - The resolved rDNS cannot be (easily; AFAIK) compared with the HELO
+#      name.
+#    - This should not be enforced for ${mynetworks}.
+#    - This should not be enforced for SASL authenticating clients.
+#      - We could remove any restriction for SASL auth, via a submission_
+#        setting.
+#      - If we wanted to allow SASL auth on the main SMTP port, we cannot
+#        distinguish between to be authenticated clients and unauthenticated
+#        clients.
+#        - AUTH comes after HELO.
+#    - See also: [0, 1, 4]
+#    - See also the notes on $myhostname above.
+#  * Default: empty.
+#  * Commented below: Enforce rDNS/FCrDNS.
+#smtpd_client_restrictions =
+#	permit_mynetworks,
+#	reject_unknown_reverse_client_hostname|reject_unknown_client_hostname
+
+# Notes:
+#  * This is not worth much without `smtpd_helo_required = yes'.
+#  * RFC 5321-compliant clients are unaffected by the below.
+#  * `permit_mynetworks` should be unnecessary.
+#    - We only allow local addresses there.
+#    - Local clients should be able to get a valid FQDN via `hostname -f`.
+#  * CONSIDER: `reject_invalid_helo_hostname'
+#    - Enforce RFC.
+#    - Possibly too strict (even though just enforcing RFC compliance).
+#  * RFC 5321 requires that the helo hostname resolves to an address RR, while
+#    `reject_unknown_helo_hostname' is also happy with any MX record.
+smtpd_helo_restrictions =
+	permit_mynetworks,
+	reject_non_fqdn_helo_hostname, 
+	reject_unknown_helo_hostname
+
+# No HELO restrictions for submission.
+#  - We can't really expect an FQDN here, for example.
+submission_helo_restrictions =
+
+# Applied upon MAIL command.
+# Notes
+#  - reject_non_fqdn_sender: FQDN required by RFC 5321.
+#  - reject_unknown_sender_domain:
+#    - Applies to relayed mail only.
+#    - Requires well-formed MX, or A record.
+#      - The RFC also allows intermediate CNAMEs (and does not say anything
+#        about well-formedness).
+#  - reject_authenticated_sender_login_mismatch:
+#    * See ${smtpd_sender_login_maps} below.
+#    - Authenticated users are required to use an email address configured for
+#      them.
+#    * `reject_sender_login_mismatch' would also reject messages from
+#      unauthenticated users where their mail address appears in
+#      ${smtpd_sender_login_maps}.
+#      - This might allow identification of valid addresses.
+#      - The above discussed ${smtpd_reject_unlisted_sender} should have the
+#        same effect.
+#      - It is generally not unallowed to have several servers sending mail
+#        with the same sender domain.
+#        - It's SPF's job to restrict that.
+#          - Sidenote: We do not enforce SPF for authenticated senders.
+smtpd_sender_restrictions =
+	reject_non_fqdn_sender,
+	reject_unknown_sender_domain,
+	reject_authenticated_sender_login_mismatch
+
+# Map envelope sender addresses to SASL login names.
+#  - See `reject_sender_login_mismatch' above.
+#  - See `/doc/mail/postfix/aliases.md`.
+#  - The order below matters.
+#    - See `/doc/mail/postfix/aliases.md`,
+#      `/doc/mail/postfix/aliases/database.md`.
+#  - This could likely be made more efficient, by combining all SQL queries
+#    into one.
+#    - Note that we probably want to retain the precedence currently enforced
+#      by the order of the queries.
+#  - See also ${virtual_alias_maps}.
+smtpd_sender_login_maps =
+	hash:{{ m['mail_postfix_maps_dir'] }}/id_static-users,
+	hash:{{ m['mail_postfix_maps_dir'] }}/static-aliases,
+	pgsql:{{ m['mail_postfix_maps_dir'] }}/postmaster-aliases.pgsql.cf,
+	pgsql:{{ m['mail_postfix_maps_dir'] }}/sender-to-login.pgsql.cf
+
+# Effectively the (`postconf -d`) default
+# (assuming ${compatibility_level} >= 3.6).
+smtpd_relay_before_recipient_restrictions = yes
+
+# Evaluated after RCPT TO, before ${smtpd_recipient_restrictions}.
+# Standard configuration to not be an open relay.
+#  - See also: ${relay_domains}.
+#  - Overridden for submission in `master.cf'.
+#  - `permit_sasl_authenticated` is ineffective for the non-submission smtpd.
+#    - We do not allow SASL auth there.
+#    - It is kept regardless, so we could easily enable SASL auth on the
+#      default port.
+smtpd_relay_restrictions =
+	permit_mynetworks,
+	permit_sasl_authenticated,
+	reject_unauth_destination
+
+submission_relay_restrictions =
+	permit_sasl_authenticated,
+	reject
+
+# Evaluated after ${smtpd_relay_restrictions}.
+#  - Intended for spam blocking.
+#  - `reject_non_fqdn_recipient': FQDN required by RFC.
+#  - `reject_unknown_recipient_domain':
+#    - Applies to relayed mail only.
+#    - Requires well-formed MX, or A record.
+#      - The RFC also allows intermediate CNAMEs (and does not say anything
+#        about well-formedness).
+#      - Any outbound mail affected by this could not be delivered anyway.
+#  - SPF
+#    - SPF is no longer evaluated here; Rspamd (milter) handles SPF, DKIM and
+#      DMARC.  See the "Milter" section and ../../rspamd.
+#  - SPF is evaluated by Rspamd (milter), so no policy service is needed here.
+smtpd_recipient_restrictions =
+	reject_non_fqdn_recipient,
+	reject_unknown_recipient_domain,
+	permit_mynetworks,
+	permit_sasl_authenticated
+
+# This rejects mail if at any point until the DATA command, illegal pipelining
+# was detected.
+#  - Possibly overlapping with or superseded by our enabling
+#    ${smtpd_forbid_unauth_pipelining}.
+#  - Reason for checking this (only) at DATA:
+#    - The SMTPD_ACCESS_README has this as example.
+#    - Preceding commands are (usually?) short, this one is usually followed
+#      by lots of data.
+#      - We could give the same thing additionally in more or less all other
+#        smtpd_*_restrictions, but there is not much to be gained.
+#      - Doing this later again might be worth consideration.
+#    - This is more or less the last command; I doubt there is an effect when
+#      this restriction is also added at the end-of-data command.
+smtpd_data_restrictions = reject_unauth_pipelining
+
+# Default.
+#smtpd_end_of_data_restrictions =
+
+# See ETRN_README on ETRN.
+# Keep at default.
+#smtpd_etrn_restrictions =
+
+
+
+###################
+## Builtin filter
+
+# See BUILTIN_FILTER_README.
+
+# Remove headers with unnecessary PII.
+#  - readme: `/etc/postfix/header-checks/privacy.re'
+#  - As usual, all submission_* variables must be appropriately used in
+#    `master.cf'.
+#    - Also, the `submission_cleanup' service must be defined in `master.cf'.
+#      - Using a variable for this at all mostly has the purpose to
+#        - a) create a reference here,
+#        - b) get a warning/error (?) in the log if the variable is not
+#          defined.
+#  - See also
+#    - the "Privacy" section,
+#    - ${smtpd_sasl_authenticated_header}.
+smtp_header_checks = regexp:{{ m['mail_postfix_header_checks_dir'] }}/privacy.re
+submission_header_checks =
+	regexp:{{ m['mail_postfix_header_checks_dir'] }}/privacy.re
+submission_cleanup_service_name = submission_cleanup
+
+# No nested header checks.
+#  - ${nested_header_checks} by default inherits ${header_checks}.
+#    - With the header checks above, this might potentially break DKIM
+#      signatures.
+nested_header_checks =
+smtp_nested_header_checks =
+
+# No mime header checks.
+#  - ${mime_header_checks} by default inherits ${header_checks}.
+mime_header_checks =
+smtp_mime_header_checks =
+
+# No milter header checks.  Default.
+milter_header_checks =
+
+
+
+###########
+## Milter
+
+# See MILTER_README.
+
+# Rspamd milter (proxy worker on localhost:11332).
+#  - Rspamd performs DKIM signing/verification, SPF, DMARC and spam scoring.
+#    - Both outbound (relayed / authenticated) and inbound mail is handed to
+#      Rspamd; it decides whether to sign or verify based on the milter macros
+#      below (notably {auth_authen}).
+#  - See ../rspamd and the Rspamd documentation on Postfix integration.
+
+# Accept a message when a milter fails.
+#  - Fail-open so mail is not lost if Rspamd is unavailable.
+#  - Overruled in master.cf for submission (fail-closed there).
+#  - This could also be set per-milter, see MILTER_README.
+#  - The submission_ setting must, as always, be explicitly used in
+#    `master.cf'.
+milter_default_action = accept
+submission_milter_default_action = reject
+
+# Modern milter protocol version.
+milter_protocol = 6
+
+# Macros passed to the milter; {auth_authen} lets Rspamd recognise
+# authenticated submissions (which it then signs).
+milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_authen}
+
+smtpd_milters = inet:localhost:11332
+non_smtpd_milters = inet:localhost:11332
+
+
+
+########################################
+## Virtual delivery, domains and users
+
+# See VIRTUAL_README.
+
+virtual_transport = lmtp:unix:private/dovecot-lmtp
+
+# Domains.
+#  - The static domains are those not configured via the database.
+#  - These must contain $myorigin.
+virtual_mailbox_domains =
+	{{ m['mail_static_domains'] | join(', ') }},
+	pgsql:{{ m['mail_postfix_sets_dir'] }}/mailbox-domains.pgsql.cf
+virtual_alias_domains =
+
+# This is just defined for use by ${smtpd_reject_unlisted_recipient}.
+#  - The default common functionality is gone, due to the non-default
+#    ${virtual_transport}.
+#  - The rhs of the map does not matter there, we use it as a set.
+#    - This is why we can reuse the id_static-users table here.
+virtual_mailbox_maps =
+	hash:{{ m['mail_postfix_maps_dir'] }}/id_static-users,
+	pgsql:{{ m['mail_postfix_sets_dir'] }}/users.pgsql.cf
+
+# See also ${virtual_alias_maps} above.
+
+
+
+###############
+## References
+
+# [0] https://en.wikipedia.org/wiki/Forward-confirmed_reverse_DNS
+# [1] https://wordtothewise.com/2020/02/what-is-fcrdns-and-why-do-we-care/
+# [2] https://www.linux.com/training-tutorials/how-set-virtual-domains-and-virtual-users-postfix/
+# [3] https://safecurves.cr.yp.to/
+# [3.1] https://safecurves.cr.yp.to/rigid.html
+# [4] https://security.stackexchange.com/questions/29976/should-content-delivery-depend-on-fcrdns-forward-confirmed-reverse-dns-look-up

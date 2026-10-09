@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+
+# Delete data for users that are no longer present in the database.
+#  - This does not handle static users.
+
+# Copyright 2022, 2023 Einhard Leichtfuß
+
+# Call as
+#  - `$0 --delete` (to be used in production), or
+#  - `$0 --list-only` (meant for testing).
+
+# Notes:
+#  - This script is very similar to the webmail deletion script.
+#    - states/lawandorga-mail/roundcube/files/delete-old-userdata.bash.j2
+#  - This script should be run as the Dovecot storage user.
+#  - This script requires the database configured "relative_path"s (and the
+#    directory names on the filesystem derived thereof) to match [a-z0-9-]+.
+#    - We importantly want valid single path elements (i.e., no slashes),
+#      excluding "." and "..".
+#      - For simplicity, and to avoid other potential issues, we require more.
+#    - This script terminates with an error otherwise.
+#      - This only applies to invalid names in the database.
+#        - We cannot check the on-fs names for slashes, "..", ".".
+#      - See verify_format_of_dirs_from_db().
+#    - We allow "-", because currently, UUIDs are used.
+#  - This script is meant to be run by cron, with `--delete`; it should have
+#    output (that cron should mail) iff anything goes wrong.
+#    - This does not apply when run with `--list-only`.
+#  - This script does not perform "secure" deletion.
+#    - This should in theory easily be doable using shred(1).
+#    - In practice, we cannot trust the underlying storage to guarantee secure
+#      deletion.
+#  - Logging:
+#    - Logged to syslog:
+#      - Removal of a directory.
+#      - A no-removal notice if nothing to be removed.
+#      - Failure to remove a directory.
+#    - Not logged:
+#      - Anything else.  That is, basically, failure to build the list of
+#        directories to be removed.
+
+# Technical notes:
+#  - We generally use the NUL byte as file name separator where one might
+#    be tempted to use a newline instead.
+#    - Filenames may generally contain newline characters.
+
+# Dependencies:
+#  - bash
+#  - coreutils (`comm`, `mktemp`, `rm`; Debian Priority=required)
+#  - findutils (`find`; Debian Priority=required)
+#  - bsdutils (`logger`; Debian Priority=required)
+#  - postgresql-client (`psql`)
+
+
+
+source -- '{{ m['bash_aux_lib_basic_path'] }}' || {
+  printf 'Fatal Error.\n' >&2
+  exit 1
+}
+
+
+
+##################
+## Configuration
+
+# See also
+#  - states/lawandorga-mail/dovecot/files/base/auth.conf.j2 (the `userdb sql`
+#    block; the account directory layout is derived from `relative_path`)
+typeset -r cfg_QUERY_DIRS='SELECT relative_path FROM core_mailaccount;'
+
+typeset -r cfg_LOG_TAG=delete-old-userdata
+typeset -r cfg_LOG_FACILITY=mail
+
+typeset -r cfg_DATA_BASE_DIR='{{ m['mail_dovecot_storage_dynamic_accounts_dir'] }}'
+
+typeset -r cfg_PGSQL_HOST='{{ m['database_server_address'] }}'
+typeset -r cfg_PGSQL_PORT='{{ m['database_server_port'] }}'
+typeset -r cfg_PGSQL_DBNAME='{{ m['database_name_mail'] }}'
+typeset -r cfg_PGSQL_USER='{{ m['database_user'] }}'
+{# A `'` in the password would close the shell quoting below; `'\''` closes,
+   escapes the literal quote, and reopens. #}
+typeset -r cfg_PGSQL_PASSWORD='{{ pillar['passbolt'][m['database_password_uuid']] | replace("'", "'\\''") }}'
+
+
+
+##############
+## Main code
+
+{# Use 'raw', 'endraw' to allow for ${#VAR} bash syntax. #}
+{% raw %}
+
+
+# Whether to actually delete the old data, and not only list its names.
+typeset delete_old_data
+
+typeset -A tmpfiles=()
+
+typeset -a dirs_to_be_removed
+
+
+function main()
+{
+  parse_args "$@"
+
+  get_dirs_from_db
+  verify_format_of_dirs_from_db
+  get_dirs_from_fs
+
+  identify_dirs_to_be_removed
+
+  if $delete_old_data
+  then
+    delete_old_dirs
+  else
+    list_old_dirs
+  fi
+}
+
+
+function on_exit()
+{
+  local tmpfile
+  for tmpfile in "${tmpfiles[@]}"
+  do
+    rm -f -- "$tmpfile"
+  done
+}
+
+
+function log()
+{
+  [[ $# -eq 2 ]]
+  local -r loglevel="$1"
+  local -r message="$2"
+  logger -t "$cfg_LOG_TAG" -p "${cfg_LOG_FACILITY}.${loglevel}" -- "$message"
+}
+
+
+function error()
+{
+  [[ $# -ge 1 ]]
+  local -ra messages=( "$@" )
+  log error "${messages[*]}"
+  printf '%s\n' "${messages[@]}" >&2
+  return 1
+}
+
+
+# See also
+#  - states/lawandorga-mail/roundcube/files/delete-old-userdata.bash.j2#_psql()
+function get_dirs_from_db()
+{
+  tmpfiles[dirs-db-unsorted]="$(umask 077; mktemp -t tmp.XXXXXX)"
+
+  # Note that giving the password in the environment is safe, at least due to
+  # our setting hidepid=2 on /proc (see fstab configuration).
+  #  - Even otherwise, `/proc/<pid>/environ` seems to have restrictive
+  #    permissions.
+  # PGSSLMODE=require forces a TLS-encrypted connection to the database server.
+  PGPASSWORD="$cfg_PGSQL_PASSWORD" PGSSLMODE=require psql \
+    --host="$cfg_PGSQL_HOST" \
+    --port="$cfg_PGSQL_PORT" \
+    --dbname="$cfg_PGSQL_DBNAME" \
+    --username="$cfg_PGSQL_USER" \
+    --no-password \
+    --no-psqlrc \
+    --no-readline \
+    --set='ON_ERROR_STOP=on' \
+    --echo-errors \
+    --quiet \
+    --tuples-only --no-align \
+    --record-separator-zero \
+    --command="$cfg_QUERY_DIRS" \
+    --output="${tmpfiles[dirs-db-unsorted]}"
+}
+
+
+# Check that the dirs from the database are of a valid format.
+#  - This is not actually important for the current run of this script.
+#    - The database-configured directories are NOT removed.
+#  - This is important for future runs of the script.
+#    - The on-fs directory names stem from the database, and we assume them
+#      to be valid single-path components.
+#  - See also the corresponding note on the top of this file.
+function verify_format_of_dirs_from_db()
+{
+  if grep -Evq --null-data '^[a-z0-9-]+$' -- "${tmpfiles[dirs-db-unsorted]}"
+  then
+    error \
+      "The database contains a directory name of invalid format" \
+      "(or an error occured with grep(1))."
+  fi
+}
+
+
+function get_dirs_from_fs()
+{
+  tmpfiles[dirs-fs-unsorted]="$(umask 077; mktemp -t tmp.XXXXXX)"
+
+  find -P "$cfg_DATA_BASE_DIR" \
+    -mindepth 1 -maxdepth 1 \
+    -type d \
+    -fprintf "${tmpfiles[dirs-fs-unsorted]}" '%P\0'
+}
+
+
+function identify_dirs_to_be_removed()
+{
+  local typ
+  for typ in db fs
+  do
+    tmpfiles["dirs-${typ}-sorted"]="$(umask 077; mktemp -t tmp.XXXXXX)"
+    sort --zero-terminated -- "${tmpfiles["dirs-${typ}-unsorted"]}" \
+      > "${tmpfiles["dirs-${typ}-sorted"]}"
+  done
+
+  tmpfiles["dirs-local-only"]="$(umask 077; mktemp -t tmp.XXXXXX)"
+
+  comm --zero-terminated -23 -- \
+    "${tmpfiles["dirs-fs-sorted"]}" \
+    "${tmpfiles["dirs-db-sorted"]}" \
+    > "${tmpfiles["dirs-local-only"]}"
+
+  mapfile -t -d '' dirs_to_be_removed < "${tmpfiles["dirs-local-only"]}"
+}
+
+
+function delete_old_dirs()
+{
+  if [[ ${#dirs_to_be_removed[@]} -gt 0 ]]
+  then
+    local dir
+    for dir in "${dirs_to_be_removed[@]}"
+    do
+      if rm -r -- "${cfg_DATA_BASE_DIR}/${dir}"
+      then
+        log notice "Deleted old data directory: ${dir}"
+      else
+        error "Failed to delete old data directory: ${dir}"
+      fi
+    done
+  else
+    log info "No old data directory to delete."
+  fi
+}
+
+
+function list_old_dirs()
+{
+  if [[ ${#dirs_to_be_removed[@]} -gt 0 ]]
+  then
+    printf 'Directories that would be removed:\n'
+    printf ' %s\n' "${dirs_to_be_removed[@]}"
+  else
+    printf 'No directory would be removed.\n'
+  fi
+}
+
+
+function parse_args()
+{
+  if [ $# -ne 1 ]
+  then
+    printf 'Wrong number of arguments given.\n' >&2
+    exit 1
+  fi
+
+  case "$1" in
+    --delete)
+      delete_old_data=true
+      ;;
+    --list-only)
+      delete_old_data=false
+      ;;
+    *)
+      printf 'Invalid argument given: %s\n' "$1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+
+main "$@"
+
+
+{% endraw %}

@@ -1,0 +1,32 @@
+add_header Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' * data:; connect-src 'self'; font-src 'self'; media-src 'self' *; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+		always;
+
+add_header X-Frame-Options "SAMEORIGIN" always;
+
+index index.php index.html;
+
+client_max_body_size
+  17825792;
+
+# `root` (not `alias`): under the `/` prefix nginx appends the URI to `root`,
+# whereas `alias` would replace the matched prefix and mangle asset paths.
+# The enclosing server block sets `root /var/www` (see the generic `nginx`
+# state); overriding it per-location avoids a duplicate `root` directive.
+location / {
+  root /var/lib/roundcube/public_html;
+  try_files $uri $uri/ /index.php;
+}
+
+location ~ [^/]\.php$ {
+  root /var/lib/roundcube/public_html;
+  if (!-f $document_root$fastcgi_script_name) {
+    return 404;
+  }
+
+  # nginx sends no FastCGI parameters by default: without `fastcgi_params` and
+  # an explicit SCRIPT_FILENAME, php-fpm answers "Primary script unknown".
+  include fastcgi_params;
+  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+  fastcgi_param HTTP_PROXY "";
+  fastcgi_pass unix:/run/php/php{{ m['web_app_mail_php_version'] }}-fpm.sock;
+}

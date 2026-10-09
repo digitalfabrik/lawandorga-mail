@@ -1,0 +1,41 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Map regular sender addresses to their login name (main account address).
+#  - This is effectively the union map of the aliases map and an identity map
+#    on the users.
+#    - Note that this works well also for group accounts using the separator
+#      in the "login name".
+#      - See `/ansible/roles/mail/dovecot/templates/dovecot/base/auth.conf.j2`.
+#      - I.e., the "login name" `group@gdomain<sep>user@udomain` is implicitly
+#        converted to `group@gdomain` when checked here.
+#        - This is probably due to Dovecot returning the login name to be
+#          checked against.
+#  - The SQL query for the aliases is almost the same.
+#    - See `./aliases.pgsql.cf`.
+#  - See
+#    - `/doc/mail/postfix/aliases/static.md`,
+#    - `/doc/mail/postfix/aliases.md`.
+
+hosts = {{ m['database_server_address'] }}:{{ m['database_server_port'] }}
+user = {{ m['database_user'] }}
+password = {{ pillar['passbolt'][m['database_password_uuid']] }}
+# Require a TLS-encrypted connection.  Postfix's pgsql client has no sslmode
+# field, but libpq parses the dbname value as a conninfo string when it
+# contains '=', which lets us set sslmode here.
+dbname = dbname={{ m['database_name_mail'] }} sslmode=require
+
+expansion_limit = 1
+
+query =
+  SELECT u.localpart || '@' || ud.name
+  FROM       core_mailaddress a
+  INNER JOIN core_mailaddress u  ON a.account_id = u.account_id
+  INNER JOIN core_maildomain  ad ON a.domain_id  = ad.id
+  INNER JOIN core_maildomain  ud ON u.domain_id  = ud.id
+  WHERE ad.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }})
+  AND   ud.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }})
+  AND   ad.is_active
+  AND   ud.is_active
+  AND   a.localpart = '%u'
+  AND   ad.name     = '%d'
+  AND   u.is_default
+  ;

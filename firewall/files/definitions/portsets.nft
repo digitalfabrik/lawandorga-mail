@@ -1,0 +1,16 @@
+# Sets of ports to use elsewhere.
+
+# Note: There is no outbound set; egress is unrestricted, see `../output/base.nft`.
+
+# Note: HTTP is needed for the ACME http-01 challenge (certbot webroot)
+# in addition to the redirect to HTTPS; HTTPS serves the webmail.
+
+# Note: The mail ports are added by the respective states, see
+# `../../../postfix/files/ports-postfix.nft` and
+# `../../../dovecot/files/ports-dovecot.nft`.
+
+define in_ports_allow_basic = \
+	{ tcp . $port_tcp_ssh
+	, tcp . $port_both_http
+	, tcp . $port_both_https
+	}

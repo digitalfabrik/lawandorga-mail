@@ -1,0 +1,8 @@
+# Delete data for accounts not (anymore) present in the main mail DB, daily.
+{% set m = pillar['lawandorga_mail'] %}
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=root
+
+# m  h dom mon dow  user      command
+ 23  5   *   *   *  www-data  /usr/local/lib/webmail/delete-old-userdata.bash --delete

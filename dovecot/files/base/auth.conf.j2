@@ -1,0 +1,232 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Authentication
+
+# See
+#  - <https://doc.dovecot.org/main/core/config/auth/overview.html>
+#    - <https://doc.dovecot.org/main/core/config/auth/passdb.html>
+#    - <https://doc.dovecot.org/main/core/config/auth/userdb.html>
+#    - <https://doc.dovecot.org/main/core/config/auth/databases/sql.html>
+#    - <https://doc.dovecot.org/main/core/config/sql/postgresql.html>
+#    - <https://doc.dovecot.org/main/core/config/auth/master_users.html>
+#  - `/etc/dovecot/conf.d/10-auth.conf`
+#  - <https://doc.dovecot.org/main/core/summaries/settings.html>
+
+# See also
+#  - `./services.conf`
+#  - `../external/sql-connection.conf.ext` (the shared PostgreSQL connection,
+#    included from `dovecot.conf` before this file).
+
+# Dovecot 2.4 migration notes:
+#  * The SQL connection (driver + credentials) is no longer configured per
+#    passdb/userdb via an external `args` file.  It is now a single global
+#    setting (`sql_driver` + a `pgsql { }` block), defined in
+#    `../external/sql-connection.conf.ext`.  The queries move *into* the
+#    `passdb`/`userdb` blocks below.
+#  * The old one-letter `%` variables were removed.  Conversions used here:
+#    - `%Ln` -> `%{user | username | lower}`
+#    - `%Ld` -> `%{user | domain | lower}`
+#    - `%L{login_user}`     -> `%{login_user | lower}`
+#    - `%L{login_username}` -> `%{login_user | username | lower}`
+#    - `%L{login_domain}`   -> `%{login_user | domain | lower}`
+#    - See <https://doc.dovecot.org/main/core/settings/variables.html>.
+
+
+# Default.
+#  - See also `./services.conf`.
+auth_socket_path = auth-userdb
+
+
+# Disable policy checking.
+#  - See <https://doc.dovecot.org/main/core/config/auth/policy.html>.
+auth_policy_check_before_auth = no
+auth_policy_check_after_auth = no
+
+
+# Disable cleartext auth unless TLS is used.
+#  - This setting has no effect; we have ssl=required.
+#  - Dovecot 2.4 renamed `disable_plaintext_auth = yes` to
+#    `auth_allow_cleartext = no`.
+auth_allow_cleartext = no
+
+# See
+#  - <https://doc.dovecot.org/main/core/config/auth/mechanisms/overview.html>
+# Note:
+#  * This is hard-coded in three places (including here).
+#    * See:
+#      - states/lawandorga-mail/postfix/files/main.cf.j2
+#      - states/lawandorga-mail/roundcube/files/roundcube.conf.php.j2
+auth_mechanisms = plain
+
+auth_ssl_require_client_cert = no
+
+
+# Default minus upper case characters.
+#  - See also
+#    - states/lawandorga-mail/roundcube/files/delete-old-userdata.bash.j2#cfg_ACCOUNT_FORMAT_REGEX
+auth_username_chars = abcdefghijklmnopqrstuvwxyz0123456789.-_@
+
+# Use lowercase username (default).
+#  - We enforce lower case above, so this is ineffective.
+#  - Old `%Lu` -> `%{user | lower}`.
+auth_username_format = %{user | lower}
+
+
+# The separator to be allowed for alternative login to our "group accounts".
+#  - This should not be contained in $auth_username_chars.
+#  - `*` is what the Dovecot documentation suggests.
+auth_master_user_separator = {{ m['mail_dovecot_group_account_separator'] }}
+
+
+# Authentication for group accounts (using "master users").
+#  - For a group account group@gdomain, allow login as user@udomain, iff this
+#    user belongs to that group.
+#  - Login is possible using
+#    a) authorization ID `group@gdomain` and authentication ID `user@udomain`,
+#    b) authorization ID and authentication ID `group@gdomain*user@udomain`, or
+#       - Most mail clients do not differentiate between authorization ID and
+#         authentication ID, so should use this.
+#    c) authorization ID `group@gdomain` and authentication ID
+#       `group@gdomain*user@udomain`.
+#       - This seems to be undocumented, and may cease to work in the future.
+#    - The password is always that of the user account.
+#  - The documentation on "master users" suggests `result_success = continue`
+#    for "master" passdbs, to check that the user authorized as actually
+#    exists.
+#    - We do not need this due to already checking the existance (and more) in
+#      the SQL queries for the "master user".  Hence we do not set it.
+#  - See
+#    - <https://doc.dovecot.org/main/core/config/auth/master_users.html>
+#    - <https://doc.dovecot.org/main/core/config/auth/passdb.html>
+
+# Dovecot 2.4 note on the passdb/userdb blocks below:
+#  * Each block is given a distinct name (the SQL passdbs cannot all be named
+#    `sql`, as identically-named filters would merge).  The driver is set
+#    explicitly with `driver = ...`.
+#  * Queries use the full canonical setting names (`passdb_sql_query`,
+#    `userdb_sql_query`, `userdb_sql_iterate_query`), which are unambiguous
+#    inside any named block.
+#  * All SQL blocks share the single connection from
+#    `../external/sql-connection.conf.ext`.
+
+# Special (static) admin group account.
+#  - This comes deliberately before the group accounts, to take precedence
+#    in case of hypothetical overlaps.
+#    - Such overlaps should, however, not be possible.
+passdb adminauth {
+  driver = sql
+  master = yes
+
+  passdb_sql_query = \
+    SELECT usr.pw_hash AS password                                             \
+    FROM       core_mailaddress       addr                                     \
+    INNER JOIN core_maildomain        d    ON addr.domain_id  = d.id           \
+    INNER JOIN core_mailaccount       acc  ON addr.account_id = acc.id         \
+    INNER JOIN core_mailuser          usr  ON acc.user_id     = usr.id         \
+    INNER JOIN core_mailadmin         adm  ON usr.id          = adm.user_id    \
+    WHERE d.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }}) \
+    AND   d.is_active                                                          \
+    AND   addr.localpart = '%{user | username | lower}'                        \
+    AND   d.name         = '%{user | domain | lower}'                          \
+    AND   addr.is_default                                                      \
+    AND   '%{login_user | lower}' = '{{ m['mail_admin_address'] }}'            \
+    ;
+}
+
+# Regular group accounts.
+passdb groupauth {
+  driver = sql
+  master = yes
+
+  passdb_sql_query = \
+    SELECT usr.pw_hash AS password                                              \
+    FROM       core_mailaddress       uaddr                                     \
+    INNER JOIN core_maildomain        ud    ON uaddr.domain_id  = ud.id         \
+    INNER JOIN core_mailaccount       uacc  ON uaddr.account_id = uacc.id       \
+    INNER JOIN core_mailuser          usr   ON uacc.user_id     = usr.id        \
+    INNER JOIN core_mailgroup_members mem   ON usr.id   = mem.mailuser_id       \
+    INNER JOIN core_mailaccount       gacc  ON mem.mailgroup_id = gacc.group_id \
+    INNER JOIN core_mailaddress       gaddr ON gacc.id  = gaddr.account_id      \
+    INNER JOIN core_maildomain        gd    ON gaddr.domain_id  = gd.id         \
+    WHERE ud.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }}) \
+    AND   gd.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }}) \
+    AND   ud.is_active                                                          \
+    AND   gd.is_active                                                          \
+    AND   uaddr.localpart = '%{user | username | lower}'                        \
+    AND   ud.name         = '%{user | domain | lower}'                          \
+    AND   uaddr.is_default                                                      \
+    AND   gaddr.localpart = '%{login_user | username | lower}'                  \
+    AND   gd.name         = '%{login_user | domain | lower}'                    \
+    AND   gaddr.is_default                                                      \
+    ;
+}
+
+
+# Authentication for ordinary user accounts.
+#  - Note that we explicitly require our domain not to be a static one.
+#    - See also `/doc/mail/postfix/aliases/database.md`.
+#  - See
+#    - <https://doc.dovecot.org/main/core/config/auth/databases/sql.html>
+passdb userauth {
+  driver = sql
+
+  passdb_sql_query = \
+    SELECT usr.pw_hash AS password                                             \
+    FROM       core_mailaddress addr                                           \
+    INNER JOIN core_maildomain  d    ON addr.domain_id  = d.id                 \
+    INNER JOIN core_mailaccount acc  ON addr.account_id = acc.id               \
+    INNER JOIN core_mailuser    usr  ON acc.user_id     = usr.id               \
+    WHERE d.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }}) \
+    AND   d.is_active                                                          \
+    AND   addr.localpart = '%{user | username | lower}'                        \
+    AND   d.name         = '%{user | domain | lower}'                          \
+    AND   addr.is_default                                                      \
+    ;
+}
+
+
+# Home lookup for static users.
+#  - This comes deliberately before the lookup for dynamic users.
+#    - There should be no ovelap possible, however.
+#      - The static and dynamic domains already do not overlap.
+#  - The `auth` service needs read access to the passwd file.
+#    - See `./services.conf`.
+#  - Dovecot 2.4: the passwd-file path is set via `passwd_file_path`
+#    (replacing the old `args = <path>`).
+#  - See
+#    - <https://doc.dovecot.org/main/core/config/auth/databases/passwd_file.html>
+userdb static {
+  driver = passwd-file
+  passwd_file_path = /etc/dovecot/conf/external/static-users.passwd
+}
+
+
+# Home lookup for dynamic users.
+#  - See
+#    - <https://doc.dovecot.org/main/core/config/auth/userdb.html>
+userdb dynamic {
+  driver = sql
+
+  userdb_sql_query = \
+    SELECT '{{ m['mail_dovecot_storage_dynamic_accounts_dir'] }}/'            \
+        || acc.relative_path                                                   \
+        AS home                                                                \
+    FROM       core_mailaddress addr                                           \
+    INNER JOIN core_maildomain  d    ON addr.domain_id  = d.id                 \
+    INNER JOIN core_mailaccount acc  ON addr.account_id = acc.id               \
+    WHERE d.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }}) \
+    AND   d.is_active                                                          \
+    AND   addr.localpart = '%{user | username | lower}'                        \
+    AND   d.name         = '%{user | domain | lower}'                          \
+    AND   addr.is_default                                                      \
+    ;
+
+  userdb_sql_iterate_query = \
+    SELECT addr.localpart AS username,                                         \
+           d.name         AS domain                                            \
+    FROM       core_mailaddress addr                                           \
+    INNER JOIN core_maildomain  d    ON addr.domain_id  = d.id                 \
+    WHERE d.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }}) \
+    AND   d.is_active                                                          \
+    AND   addr.is_default                                                      \
+    ;
+}

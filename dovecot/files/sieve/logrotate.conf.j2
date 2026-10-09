@@ -1,0 +1,27 @@
+{% set m = pillar['lawandorga_mail'] %}
+# logrotate(8) configuration for per-account sieve logs.
+
+# Notes:
+#  * For each account, a log file is created on error.
+#    * See `./sieve.conf.j2#sieve_user_log`.
+#  * Dovecot rotates the log file itself when it grows > 10KiB.
+#    * See:
+#      - <https://doc.dovecot.org/configuration_manual/sieve/usage/#compile-and-runtime-logging>
+#      - <https://github.com/dovecot/pigeonhole/blob/main/src/lib-sieve/sieve-error.c>
+#    * It simply renames `<LOGFILENAME>` to `<LOGFILENAME>.0`.
+#      * No further rotation.
+#      * To be on the safe side, we match `<LOGFILENAME>.*` below.
+#    * We explicitly use `dateext` and `olddir` to avoid collision with
+#      Dovecot's own log rotation.
+
+{{ m['mail_dovecot_storage_static_accounts_dir'] }}/*/sieve/active.log
+{{ m['mail_dovecot_storage_static_accounts_dir'] }}/*/sieve/active.log.*
+{{ m['mail_dovecot_storage_dynamic_accounts_dir'] }}/*/sieve/active.log
+{{ m['mail_dovecot_storage_dynamic_accounts_dir'] }}/*/sieve/active.log.*
+{
+	nocreate
+	missingok
+	dateext
+	olddir active.log.old.d
+	createolddir 0700 {{ m['mail_dovecot_storage_user'] }} {{ m['mail_dovecot_storage_group'] }}
+}

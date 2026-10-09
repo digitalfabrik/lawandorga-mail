@@ -1,0 +1,166 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Service configuration.
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/service_configuration/>
+#    - In particular, lists all default services.
+#  - `/etc/dovecot/conf.d/10-master.conf`
+#  - <https://doc.dovecot.org/settings/core/>
+
+# Notes:
+#  * All default services were considered.
+#    - Generally, only settings made here where the default is to be changed.
+#  * We do not use POP, so there is no corresponding block for pop3-login.
+#    - See also $protocols.
+
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/service_configuration/#auth>
+#  - <https://doc.dovecot.org/configuration_manual/protocols/lda/#with-a-lookup>
+service auth {
+
+  # This is the default auth listener.
+  #  - See `./auth.conf`, $auth_socket_path.
+  unix_listener auth-userdb {
+    mode = 0600
+    user = {{ m['mail_dovecot_storage_user'] }}
+  }
+
+  # Authentication for Postfix.
+  #  - Only permits SASL auth due to file name.
+  #  - See
+  #    - <https://www.postfix.org/SASL_README.html#server_dovecot>,
+  #    - <https://doc.dovecot.org/configuration_manual/howto/postfix_and_dovecot_sasl/#example-conf-d-10-master-conf-excerpt>.
+  unix_listener /var/spool/postfix/private/dovecot-auth {
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+
+  # Default.
+  #user = $SET:default_internal_user
+
+  # We cannot configure an empty chroot.
+  #  - We need to access a passwd file, see `./auth.conf`.
+  #  - Invoking the iterate query (via `doveadm mailbox list -A`, e.g.) fails
+  #    with chroot enabled here.
+  #chroot = empty
+
+  # We want to use Argon2, for which >= 2G memory is recommended.
+  #  - <https://doc.dovecot.org/configuration_manual/authentication/password_schemes/>
+  vsz_limit = {{ m['mail_dovecot_auth_memory_limit'] }}
+}
+
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/service_configuration/#auth-worker>
+service auth-worker {
+
+  # Default `root`, for PAM auth.
+  #  - Dovecot 2.4 requires the `$SET:` prefix to reference another setting.
+  user = $SET:default_internal_user
+
+  chroot = empty
+}
+
+
+# See
+#  - <https://doc.dovecot.org/admin_manual/login_processes/#login-processes>
+service imap-login {
+
+  # IMAP with STARTTLS.
+  #  - TLS is mandatory regardless, see `./tls.conf`, $ssl.
+  #  - Also used by Roundcube, over the loopback interface
+  #    (`tls://localhost:143`, see the roundcube state's $config['imap_host']).
+  inet_listener imap {
+    # Default.
+    #port = 143
+  }
+
+  # IMAP with implicit TLS.
+  #  - RFC 8314 recommends implicit TLS over STARTTLS, and most modern clients
+  #    try 993 first.
+  #  - `ssl = yes` is Dovecot's built-in default for a listener named `imaps`;
+  #    we state it explicitly, since it is what distinguishes this listener.
+  #  - Both ports are opened in `../ports-dovecot.nft`.
+  inet_listener imaps {
+    port = 993
+    ssl = yes
+  }
+
+  # "High security mode".  Default.
+  #  - Renamed from `service_count` in Dovecot 2.4.  A value of `0` is now a
+  #    configuration error (the new default is `unlimited`).
+  service_restart_request_count = 1
+}
+
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/service_configuration/#imap-pop3-submission-managesieve>
+service imap {
+
+  # Default.
+  #  - "for now it's not safe to set this value higher than 1 in enterprise
+  #    mail systems".
+  client_limit = 1
+
+  # Default.
+  #process_limit = 1024
+}
+
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/service_configuration/#lmtp>
+#  - <https://doc.dovecot.org/configuration_manual/protocols/lmtp_server/>
+service lmtp {
+
+  # Disable default listener.
+  #  - All mail should arrive via Postfix.
+  unix_listener lmtp {
+    mode = 0
+  }
+
+  # LMTP for Postfix.
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+
+  # Keep the default `root`.
+  #  - Dovecot 2.4's anvil listener is `root:$SET:default_internal_group` mode
+  #    0660; running LMTP as the storage user makes every delivery log
+  #    "net_connect_unix(/run/dovecot/anvil) failed: Permission denied", which
+  #    loses session tracking and $lmtp_user_concurrency_limit enforcement.
+  #  - Privileges are dropped to $mail_uid/$mail_gid (see `./mail-storage.conf`)
+  #    after the userdb lookup, so mail is still accessed as the storage user.
+  #user = {{ m['mail_dovecot_storage_user'] }}
+
+  # Default.
+  client_limit = 1
+}
+
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/service_configuration/#doveadm>
+service doveadm {
+
+  # Default `root`.
+  user = {{ m['mail_dovecot_storage_user'] }}
+}
+
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/service_configuration/#indexer>
+service indexer {
+  chroot = $SET:base_dir
+}
+
+
+# See
+#  - <https://doc.dovecot.org/configuration_manual/service_configuration/#indexer-worker>
+service indexer-worker {
+
+  # Default `root`.
+  user = {{ m['mail_dovecot_storage_user'] }}
+}

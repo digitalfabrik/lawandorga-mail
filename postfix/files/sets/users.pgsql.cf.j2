@@ -1,0 +1,23 @@
+{% set m = pillar['lawandorga_mail'] %}
+# Set of all database users.
+
+hosts = {{ m['database_server_address'] }}:{{ m['database_server_port'] }}
+user = {{ m['database_user'] }}
+password = {{ pillar['passbolt'][m['database_password_uuid']] }}
+# Require a TLS-encrypted connection.  Postfix's pgsql client has no sslmode
+# field, but libpq parses the dbname value as a conninfo string when it
+# contains '=', which lets us set sslmode here.
+dbname = dbname={{ m['database_name_mail'] }} sslmode=require
+
+expansion_limit = 1
+
+query =
+  SELECT 1
+  FROM       core_mailaddress addr
+  INNER JOIN core_maildomain  d    ON addr.domain_id = d.id
+  WHERE d.name NOT IN ({{ "'" + m['mail_static_domains'] | join("', '") + "'" }})
+  AND   d.is_active
+  AND   addr.localpart = '%u'
+  AND   d.name         = '%d'
+  AND   addr.is_default
+  ;

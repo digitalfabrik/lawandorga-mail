@@ -1,0 +1,136 @@
+# Unbound systemd service for Unbound 1.17.1 on Debian Bookworm.
+#
+# Assembled from
+#  * the Debian package's service (debver 1.17.1-2+deb12u2),
+#    - `debian/unbound.service`
+#    - Arguably also: `debian/unbound-helper`
+#    * Copyright & license: See `/doc/copyright/unbound-debian.md`.
+#  * Unbound 1.17.1
+#    - `contrib/unbound.service.in`
+#    * `configure` values manually replaced (e.g., @UNBOUND_SYSCONF_DIR@)
+#      * `@UNBOUND_CHROOT_DIR` is "" on Debian, but was replaced by
+#        `/var/lib/unbound`, our actual chroot directory.
+#    * Copyright & license: See `/doc/copyright/unbound.md`.
+#    * The two versions differ only slightly w.r.t. this file.
+#  * elsewhere (see comments).
+#
+# Works in tandem with
+#  * a custom `unbound.conf`.
+#
+# Configuration lines are marked depending on where they are from.
+#  * If unmarked, the respective configuration is present in both the Debian
+#    provided service and the upstream Unbound configuration.
+
+
+[Unit]
+# Unbound upstream:
+#Description=Validating, recursive, and caching DNS resolver
+# Debian:
+Description=Unbound DNS server
+
+Documentation=man:unbound(8)
+After=network.target
+
+# Unbound upstream:
+Before=network-online.target nss-lookup.target
+# Debian:
+#Before=nss-lookup.target
+#Wants=nss-lookup.target
+
+
+[Install]
+WantedBy=multi-user.target
+
+
+[Service]
+Type=notify
+
+# Unbound upstream:
+NotifyAccess=main
+
+# Debian:
+Restart=on-failure
+
+# Debian:
+#EnvironmentFile=-/etc/default/unbound
+
+# Custom:
+#  * This is a workaround.
+#  * See `/doc/misc/unbound/file-ownership.md`.
+ExecStartPre=+/bin/chown -R unbound:unbound /var/lib/unbound/root_key/
+
+# Debian:
+#  * Copy /etc/unbound into chroot; instead, bind-mount it.
+#  * Bind-mount /run/systemd/notify; instead, do that explicitly later on.
+#ExecStartPre=-/usr/libexec/unbound-helper chroot_setup
+
+# Debian (Update trust anchor (`root.key`) from `dns-root-data` package):
+#ExecStartPre=-/usr/libexec/unbound-helper root_trust_anchor_update
+# Custom:
+ExecStartPre=/usr/libexec/unbound-helper root_trust_anchor_update
+
+# Debian (allow additional options from EnvironmentFile):
+#ExecStart=/usr/sbin/unbound -d -p $DAEMON_OPTS
+# Unbound upstream:
+ExecStart=/usr/sbin/unbound -d -p
+
+# Debian:
+#  * See above.
+#ExecStopPost=-/usr/libexec/unbound-helper chroot_teardown
+
+ExecReload=+/bin/kill -HUP $MAINPID
+
+
+# Unbound upstream:
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETGID CAP_SETUID CAP_SYS_CHROOT CAP_SYS_RESOURCE CAP_NET_RAW
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=false
+ProtectProc=invisible
+ProtectSystem=strict
+RuntimeDirectory=unbound
+ConfigurationDirectory=unbound
+StateDirectory=unbound
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictRealtime=true
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @keyring @module mount @obsolete @resources
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+
+# Unbound upstream:
+#  * `/var/lib/unbound` is already writable as `StateDirectory=`,
+#  * `/etc/unbound` is already readable as `ConfigurationDirectory=`.
+#    * Read access should suffice.
+#    * Note that the upstream macro behind this is `@UNBOUND_RUN_DIR@`.
+#ReadWritePaths=/etc/unbound /var/lib/unbound
+
+
+# Chroot.
+
+# Unbound upstream:
+#  * No idea why there are read-only tmpfs's.
+#  * Unsure whether the `-' prefixes are a good idea.
+#  * Note: /dev/log should only be required when logging to syslog.
+#  * `notify' socket required for `Type=notify'.
+#  * See also unbound.conf(5).
+TemporaryFileSystem=/var/lib/unbound/dev:ro
+TemporaryFileSystem=/var/lib/unbound/run:ro
+BindReadOnlyPaths=-/run/systemd/notify:/var/lib/unbound/run/systemd/notify
+BindReadOnlyPaths=-/dev/urandom:/var/lib/unbound/dev/urandom
+BindPaths=-/dev/log:/var/lib/unbound/dev/log
+
+# Custom: Put configuration where it is expected to be.
+BindReadOnlyPaths=/etc/unbound/:/var/lib/unbound/etc/unbound/
+
+# Custom: Make root.hints from package `dns-root-data' accessible.
+#  * Note: The root.key is copied over instead by that script configured above.
+BindReadOnlyPaths=/usr/share/dns/root.hints:/var/lib/unbound/root.hints

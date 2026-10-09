@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+
+# (Re)Generate DH parameters for TLS.
+
+source -- '{{ m['bash_aux_lib_basic_path'] }}' || {
+  printf 'Fatal Error.\n' >&2
+  exit 1
+}
+
+# Configuration
+storage_dir='{{ m['tls_dhparams_path'].rsplit('/', 1)[0] }}'
+size=4096
+filename_prefix='dh'
+filename_suffix='.pem'
+filename_suffix_tmp='.tmp.pem'
+
+# Run
+umask 022
+cd -- "$storage_dir" || exit 1
+
+tmp="${filename_prefix}${size}${filename_suffix_tmp}"
+file="${filename_prefix}${size}${filename_suffix}"
+
+if ! ret_str="$(openssl dhparam -out "$tmp" -- "$size" 2>&1)"
+then
+  printf '%s\n' "$ret_str" 2>&1
+  false
+fi
+
+mv -- "$tmp" "$file"
+chmod 644 -- "$file"

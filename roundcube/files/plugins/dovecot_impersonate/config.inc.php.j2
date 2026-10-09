@@ -1,0 +1,6 @@
+<?php
+// See `/usr/share/roundcube/plugins/dovecot_impersonate/config.inc.php.dist`.
+{% set m = pillar['lawandorga_mail'] %}
+
+$rcmail_config['dovecot_impersonate_seperator'] =
+  '{{ m['mail_dovecot_group_account_separator'] }}';

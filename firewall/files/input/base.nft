@@ -1,0 +1,31 @@
+# Input base chain.
+#  - Specific configuration to be done via defining in_inbound chain.
+
+table inet filter {
+	chain input {
+		type filter hook input priority filter; policy drop;
+
+		ct state established,related accept
+		ct state invalid drop
+
+		iif lo accept
+
+		ip protocol icmp accept
+		ip6 nexthdr ipv6-icmp accept
+		ip protocol igmp accept
+
+		jump in_inbound
+
+		limit rate 60/minute \
+			log prefix "[nftables] Inbound denied: " flags all \
+			counter \
+			reject
+		limit rate 60/second \
+			counter \
+			reject
+	}
+
+	chain in_inbound {
+		# To be extended elsewhere.
+	}
+}
